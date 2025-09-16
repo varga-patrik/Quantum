@@ -1,0 +1,5 @@
+C:\Users\patri\source\repos\CorrelatorGui\x64\Debug\raylib.dll
+C:\Users\patri\source\repos\CorrelatorGui\CorrelatorGui\x64\Debug\Correlat.9AFE0BD6.Up2Date
+C:\Users\patri\OneDrive\Asztali gép\kvantum\CorrelatorGui\x64\Debug\raylib.dll
+C:\Users\patri\OneDrive\Asztali gép\kvantum\CorrelatorGui\CorrelatorGui\x64\Debug\Correlat.9AFE0BD6.Up2Date
+C:\Users\patri\OneDrive\Asztali gép\kvantum\CorrelatorGui\x64\Debug\fftw3.dll

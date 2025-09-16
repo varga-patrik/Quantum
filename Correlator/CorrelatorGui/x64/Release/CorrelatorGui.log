@@ -1,0 +1,13 @@
+﻿  Correlator.cpp
+C:\Users\patri\OneDrive\Asztali gép\kvantum\CorrelatorGui\Correlator.cpp(37,32): warning C4244: 'initializing': conversion from 'double' to 'uint64_t', possible loss of data
+C:\Users\patri\OneDrive\Asztali gép\kvantum\CorrelatorGui\Correlator.cpp(124,48): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data
+C:\Users\patri\OneDrive\Asztali gép\kvantum\CorrelatorGui\Correlator.cpp(125,48): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data
+C:\Users\patri\OneDrive\Asztali gép\kvantum\CorrelatorGui\Correlator.cpp(145,48): warning C4267: 'argument': conversion from 'size_t' to 'int', possible loss of data
+  CorrelatorGui.cpp
+  Generating code
+  Previous IPDB not found, fall back to full compilation.
+  All 1145 functions were compiled because no usable IPDB/IOBJ from previous compilation was found.
+  Finished generating code
+  CorrelatorGui.vcxproj -> C:\Users\patri\OneDrive\Asztali gép\kvantum\CorrelatorGui\x64\Release\CorrelatorGui.exe
+  'pwsh.exe' is not recognized as an internal or external command,
+  operable program or batch file.
