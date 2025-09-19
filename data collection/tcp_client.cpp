@@ -8,7 +8,10 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <iostream>
+#include <sstream>
 #include "fs_util.h"
+#include "KinesisUtil.h"
+#include "Correlator.h"
 #include "direct.h"
 
 // Need to link with Ws2_32.lib, Mswsock.lib, and Advapi32.lib

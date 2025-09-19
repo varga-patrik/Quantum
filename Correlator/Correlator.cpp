@@ -254,13 +254,15 @@ void Correlator::delete_marked_values(const char* fname) {
     }
 
     std::vector<uint64_t> buffer(chunk_size);
+    size_t chunkCnt = 0;
     while (inFile.read(reinterpret_cast<char*>(buffer.data()), buffer.size() * sizeof(uint64_t)) || inFile.gcount()) {
         size_t readCount = inFile.gcount() / sizeof(uint64_t);
         for (size_t i = 0; i < readCount; ++i) {
-            if (buffer[i] != MARKED_FOR_DELETION) {
+            if (!std::binary_search(marked.begin(), marked.end(), chunkCnt * chunk_size + i)) {
                 tempFile.write(reinterpret_cast<char*>(&buffer[i]), sizeof(uint64_t));
             }
         }
+        chunkCnt++;
     }
     inFile.close();
     tempFile.close();
@@ -325,22 +327,21 @@ void Correlator::noise_reduc_bound(const char* fp1, const char* fp2) {
 
     std::cerr << "Marking values outside of bounds\n";
     size_t chunkCnt = 0;
+    marked.clear();
     while (largerFile.read(reinterpret_cast<char*>(datapoints.data()), datapoints.size() * sizeof(uint64_t)) || largerFile.gcount()) {
         size_t readCount = largerFile.gcount() / sizeof(uint64_t);
         for (size_t i = 0; i + 1 < readCount; i += 2) {
             uint64_t datapoint = datapoints[i] + (datapoints[i + 1] * static_cast<uint64_t>(1e12));
             if (!is_target_in_bound(bounds.data(), num_elements_smaller, datapoint)) {
-                largerFile.seekp((chunkCnt * chunk_size + i) * sizeof(uint64_t), std::ios::beg);
-                uint64_t marker = MARKED_FOR_DELETION;
-                largerFile.write(reinterpret_cast<char*>(&marker), sizeof(uint64_t));
-                largerFile.write(reinterpret_cast<char*>(&marker), sizeof(uint64_t));
-                largerFile.seekg((chunkCnt + 1) * chunk_size * sizeof(uint64_t), std::ios::beg);
+                marked.push_back(chunkCnt * chunk_size + i);
+                marked.push_back(chunkCnt * chunk_size + i + 1);
             }
         }
         ++chunkCnt;
     }
     largerFile.close();
 
+    std::sort(marked.begin(), marked.end());
     delete_marked_values(larger_fp_name);
 }
 
@@ -360,8 +361,8 @@ void Correlator::copyFiles(const std::vector<std::string>& inputPaths, const cha
             continue; // skip this file
         }
 
-        while (inputFile.read(reinterpret_cast<char*>(buffer.data()), buffer.size() * sizeof(uint64_t)) 
-               || inputFile.gcount()) {
+        while (inputFile.read(reinterpret_cast<char*>(buffer.data()), buffer.size() * sizeof(uint64_t))
+            || inputFile.gcount()) {
             size_t readCount = inputFile.gcount() / sizeof(uint64_t);
             for (size_t i = 0; i < readCount; ++i) {
                 buffer[i] += delay;

@@ -7,7 +7,7 @@
 #include <complex>
 #include <cmath>
 #include <iostream>
-
+#include <algorithm>
 
 const size_t Nbin = 200;
 const uint64_t MARKED_FOR_DELETION = 0xFFFFFFFFFFFFFFFF;
@@ -103,4 +103,5 @@ public:
     void noise_reduc_bound(const char*, const char*);
     void copyFiles(const std::vector<std::string>&, const char*, size_t);
     int runCorrelation(bool, const std::vector<std::string>&, const std::vector<std::string>&, uint64_t);
+    std::vector<int> marked;
 };

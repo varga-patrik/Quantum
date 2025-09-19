@@ -7,7 +7,7 @@ bool KinesisUtil::connect() {
 	return errorCode == 0;
 }
 
-void KinesisUtil::wait_for_command(WORD type, WORD id) {
+void KinesisUtil::wait_for_command(WORD type, WORD id) { //id = 0 ha home, mozgásnál 1
     if (connected && active) {
         ISC_WaitForMessage(serialNum.c_str(), &messageType, &messageId, &messageData);
         while (messageType != type || messageId != id)

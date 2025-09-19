@@ -4,7 +4,6 @@
 #include <iostream>
 #include "C:\Program Files\Thorlabs\Kinesis\Thorlabs.MotionControl.IntegratedStepperMotors.h"
 
-
 class KinesisUtil {
 private:
 	std::string serialNum;
