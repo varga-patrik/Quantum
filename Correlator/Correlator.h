@@ -10,7 +10,6 @@
 #include <algorithm>
 
 const size_t Nbin = 200;
-const uint64_t MARKED_FOR_DELETION = 0xFFFFFFFFFFFFFFFF;
 
 typedef struct Vmax
 {
@@ -47,6 +46,7 @@ private:
     const char* dataset2;
     const char* modifialbe_dataset1 = "ts1.bin";
     const char* modifialbe_dataset2 = "ts2.bin";
+    std::vector<int> marked;
 
 public:
     Correlator(size_t chunkSize, uint64_t Nval)
@@ -103,5 +103,4 @@ public:
     void noise_reduc_bound(const char*, const char*);
     void copyFiles(const std::vector<std::string>&, const char*, size_t);
     int runCorrelation(bool, const std::vector<std::string>&, const std::vector<std::string>&, uint64_t);
-    std::vector<int> marked;
 };
