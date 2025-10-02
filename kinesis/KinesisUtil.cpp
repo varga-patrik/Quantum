@@ -1,5 +1,6 @@
 #include "KinesisUtil.h"
 
+//kapcsolodas az eszkozhoz
 bool KinesisUtil::connect() {
     std::cout << "Connecting to " << serialNum << std::endl;
 	short errorCode;
@@ -7,7 +8,11 @@ bool KinesisUtil::connect() {
 	return errorCode == 0;
 }
 
-void KinesisUtil::wait_for_command(WORD type, WORD id) { //id = 0 ha home, mozgásnál 1
+//varakozas a megadott parancs lefutasara
+//nagyon konnyu egy vegtelen ciklust csinalni, ha rossz id-t adunk meg
+//a leiras szerint egy generic motors eszkozokre (mint amilyen az az eszkoz is amire eredetileg keszult a kod) az alabbi id-k vannak:
+//homed: 0, moved: 1, stopped: 2, limitUpdated: 3
+void KinesisUtil::wait_for_command(WORD type, WORD id) { //id = 0 ha home, mozgasnal 1
     if (connected && active) {
         ISC_WaitForMessage(serialNum.c_str(), &messageType, &messageId, &messageData);
         while (messageType != type || messageId != id)
@@ -17,6 +22,12 @@ void KinesisUtil::wait_for_command(WORD type, WORD id) { //id = 0 ha home, mozg�
     }
 }
 
+//betolti az eszkoz beallitasait
+//megjegyzes, nagyon sokat olvastam a leirast, de nem tudom pontosan hol vannak ezek a beallitasok
+//azt sem tudom lehet e ezt a beallitast manipulalni, vagy csak olvasasra van
+//van egy loadNamedSettings is, de arra sem talaltam semmit hogyan lehet olyat letrehozni
+//lenyeg a lenyeg, enelkul valamiert egyes funkciok nem futnak le, illetve nagyon lassan forog a motor ha nem futtatjuk le
+//enelkul is allithato a forgasi sebesseg de nagyon nem praktikus
 bool KinesisUtil::load() {
     if (connected && active) {
         std::cout << "Loading " << serialNum << std::endl;
@@ -26,6 +37,7 @@ bool KinesisUtil::load() {
     return false;
 }
 
+//polling inditasa
 bool KinesisUtil::startPolling(int milisec) {
     if (connected && active) {
         std::cout << "Polling " << serialNum << std::endl;
@@ -37,6 +49,7 @@ bool KinesisUtil::startPolling(int milisec) {
     return false;
 }
 
+//polling leallitasa
 bool KinesisUtil::stopPolling() {
     if (connected && active) {
         std::cout << "Stopping polling with " << serialNum << std::endl;
@@ -47,6 +60,7 @@ bool KinesisUtil::stopPolling() {
     return false;
 }
 
+//uzenetek torlese
 bool KinesisUtil::clear() {
     if (connected && active) {
         std::cout << "Clearing messages from " << serialNum << std::endl;
@@ -57,6 +71,7 @@ bool KinesisUtil::clear() {
     return false;
 }
 
+//home pozicioba allitas
 bool KinesisUtil::home() {
     if (connected && active) {
         std::cout << "Homing " << serialNum << std::endl;
@@ -67,6 +82,7 @@ bool KinesisUtil::home() {
     return false;
 }
 
+//valos ertek atvaltasa eszkoz ertekre
 int KinesisUtil::getDevice(double real, int unitType) {
     if (connected && active) {
         short errorCode;
@@ -78,6 +94,7 @@ int KinesisUtil::getDevice(double real, int unitType) {
     return -1;
 }
 
+//eszkoz ertek atvaltasa valos ertekre
 double KinesisUtil::getReal(int device, int unitType) {
     if (connected && active) {
         short errorCode;
@@ -89,6 +106,7 @@ double KinesisUtil::getReal(int device, int unitType) {
     return -1;
 }
 
+//jog lepes meretenek beallitasa
 bool KinesisUtil::setJogStep(double step) {
     if (connected && active) {
         std::cout << "Setting step size for " << serialNum << std::endl;
@@ -101,6 +119,7 @@ bool KinesisUtil::setJogStep(double step) {
     return false;
 }
 
+//jog inditasa
 bool KinesisUtil::jog() {
     if (connected && active) {
         std::cout << "Jogging " << serialNum << std::endl;
@@ -112,6 +131,7 @@ bool KinesisUtil::jog() {
     return false;
 }
 
+//mozgas adott pozicioba
 bool KinesisUtil::moveToPosition(double degree) {
     if (connected && active) {
         std::cout << "Moving " << serialNum << std::endl;
@@ -123,6 +143,7 @@ bool KinesisUtil::moveToPosition(double degree) {
     return false;
 }
 
+//abszolut pozicio beallitasa
 bool KinesisUtil::setAbsParam(double degree) {
     if (connected && active) {
         short errorCode;
@@ -133,6 +154,7 @@ bool KinesisUtil::setAbsParam(double degree) {
     return false;
 }
 
+//abszolut pozicioba mozgas
 bool KinesisUtil::moveAbs() {
     if (connected && active) {
         std::cout << "Moving " << serialNum << std::endl;
@@ -144,6 +166,7 @@ bool KinesisUtil::moveAbs() {
     return false;
 }
 
+//relativ pozicio beallitasa
 bool KinesisUtil::setRelParam(double degree) {
     if (connected && active) {
         short errorCode;
@@ -154,6 +177,7 @@ bool KinesisUtil::setRelParam(double degree) {
     return false;
 }
 
+//relativ pozicioba mozgas
 bool KinesisUtil::moveRel() {
     if (connected && active) {
         std::cout << "Moving " << serialNum << std::endl;
@@ -165,6 +189,7 @@ bool KinesisUtil::moveRel() {
     return false;
 }
 
+//aktualis pozicio lekerese, fokokban szamolva
 double KinesisUtil::getPos() {
     if (connected && active) {
         return getReal(ISC_GetPosition(serialNum.c_str()), 0);
@@ -173,6 +198,7 @@ double KinesisUtil::getPos() {
     return -1;
 }
 
+//ellenorzi hogy mozoghat e az eszkoz, ha nem akkor home-olni kell eloszor
 bool KinesisUtil::canMove() {
     if (connected && active) {
         return ISC_CanMoveWithoutHomingFirst(serialNum.c_str());

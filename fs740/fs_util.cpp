@@ -1,7 +1,9 @@
 #include "fs_util.h"
+#include <algorithm>
 
 #pragma comment (lib, "Ws2_32.lib")
 
+//lefuttat egy fajlt, ami lehet .exe vagy .py is
 void FSUtil::run(std::string path){
     STARTUPINFOA si;
     PROCESS_INFORMATION pi;
@@ -44,18 +46,14 @@ void FSUtil::run(std::string path){
     std::cout << "Finished running proccess at " << print_gpstime() << std::endl;
 }
 
+//segedfuggveny ket c string megegyezik-e
 bool FSUtil::is_same_str(const char* str1, const char* str2){
-    for(int i=0; str1[i]!='\0' || str2[i]!='\0'; i++){
-        if(str1[i]!='\0' && str2[i]=='\0' || str2[i]!='\0' && str1[i]=='\0'){
-            return false;
-        }
-        if(str1[i]!=str2[i]){
-            return false;
-        }
-    }
-    return true;
+    std::string _str1 = str1;
+    std::string _str2 = str2;
+    return _str1 == _str2;
 }
 
+//a muszerhez tartozo peldaprogram igy inicializalja a tcp/ip kapcsolatot
 void FSUtil::init_tcpip(void)
 {
     WSADATA wsadata;
@@ -65,6 +63,7 @@ void FSUtil::init_tcpip(void)
     }
 }
 
+//a muszerhez tartozo peldaprogram igy csatlakozik a muszerhez
 int FSUtil::fs740_connect(unsigned long ip)
 {
     /* Connect to the FS740 */
@@ -97,6 +96,7 @@ int FSUtil::fs740_connect(unsigned long ip)
     return 1;
 }
 
+//a muszerhez tartozo peldaprogram igy zárja a kapcsolatot
 int FSUtil::fs740_close(void)
 {
     if (connected){
@@ -108,6 +108,7 @@ int FSUtil::fs740_close(void)
     return 0;
 }
 
+//a muszerhez tartozo peldaprogram igy ir a muszernek
 int FSUtil::fs740_write(const char *str)
 {
     if (connected){
@@ -122,6 +123,7 @@ int FSUtil::fs740_write(const char *str)
     return 0;
 }
 
+//a muszerhez tartozo peldaprogram igy ir a muszernek byte-okat
 int FSUtil::fs740_write_bytes(const void *data, unsigned num)
 {
     if(connected){
@@ -136,6 +138,7 @@ int FSUtil::fs740_write_bytes(const void *data, unsigned num)
     return 0;
 }
 
+//a muszerhez tartozo peldaprogram igy olvas a muszertol
 int FSUtil::fs740_read(char *buffer, unsigned num)
 {
     if (connected){
@@ -180,6 +183,9 @@ int FSUtil::fs740_read(char *buffer, unsigned num)
     return 0;
 }
 
+//stringkent megadja az idot a gep orajanak felhasznalasaval, de a gps formatumaban
+//funkcioja teszteles volt, tudni akartam mennyire pontatlan a gep oraja a gps-hez kepest
+//illetve idovel mennyire romlik a pontossaga
 std::string FSUtil::precise_computer_time(){
     auto now = std::chrono::system_clock::now();
 
@@ -199,6 +205,8 @@ std::string FSUtil::precise_computer_time(){
     return strStream.str();
 }
 
+//kiszamolja az idokulonbseget ket idopont kozott picosecben
+//a korabban emlitett teszteleshez kellett
 int64_t FSUtil::calculate_time_diff(const char *buff1, const char* buff2) {
 	// Parse input: HH,MM,SS.picoseconds
 	int hour1, minute1;
@@ -239,7 +247,7 @@ int64_t FSUtil::calculate_time_diff(const char *buff1, const char* buff2) {
 
 	// Normalize to 12-digit picoseconds (pad with zeros if needed)
 	char picoFull1[13] = "000000000000";
-	strncpy(picoFull1, picoStr1, std::min((size_t)12, strlen(picoStr1)));
+    strncpy(picoFull1, picoStr1, strlen(picoStr1) < 12 ? strlen(picoStr1) : 12);
 	uint64_t picoseconds1 = std::strtoull(picoFull1, nullptr, 10);
 
 	// Total picoseconds since midnight for input
@@ -247,7 +255,7 @@ int64_t FSUtil::calculate_time_diff(const char *buff1, const char* buff2) {
 		((hour1 * 3600LL + minute1 * 60LL + second1) * 1'000'000'000'000LL) + picoseconds1);
 
     char picoFull2[13] = "000000000000";
-	strncpy(picoFull2, picoStr2, std::min((size_t)12, strlen(picoStr2)));
+	strncpy(picoFull2, picoStr2, strlen(picoStr2) < 12 ? strlen(picoStr2) : 12);
 	uint64_t picoseconds2 = std::strtoull(picoFull2, nullptr, 10);
 
 	// Total picoseconds since midnight for input
@@ -258,24 +266,26 @@ int64_t FSUtil::calculate_time_diff(const char *buff1, const char* buff2) {
 	return buff1Picoseconds - buff2Picoseconds;
 }
 
+//var egy idopontig, amig nem er el addig nem engedi a thread-et
+//tesztelesek alapjan ez a legpontosabb varasi mod, mikrosec pontossaggal mukodik
+//ugy mukodik hogy a thread pollingolja a gps orajat es ha elerte a megadott idopontot akkor tovabbengedi a thread-et
+//masik opcio a varasra a thread::sleep_for lenne, de az kevesbe pontos teszteleseim alapjan
 void FSUtil::wait_until(const char* t){
     if (connected){
         while(!is_earlier_time(t, buffer)){
             fs740_write("syst:time?\n");
             fs740_read(buffer,sizeof(buffer));    
         }
-        /*double diff = abs((double)calculate_time_diff(t, print_gpstime().c_str()) / 1000000000000);
-        int seconds = (int) diff;
-        int microsec = (int) (diff-seconds)*1000000;
-        std::this_thread::sleep_for(std::chrono::seconds(seconds));
-        std::this_thread::sleep_for(std::chrono::microseconds(microsec));*/
     }
 }
 
+//megmondja hogy a ket idopont kozul az egyik korabbi e
 bool FSUtil::is_earlier_time(const char* early, const char* late){
     return calculate_time_diff(early, late) < 0;
 }
 
+//kiirja fajlba a megadott szamot, csak akkor mukodik ha admin jogokkal fut az .exe
+//ez a funkcio is teszteleshez kellett
 void FSUtil::write_diff_to_file(double delta, const std::string& filename = "diff_data.csv") {
     std::ofstream outFile(filename, std::ios::app);
     if (!outFile) {
@@ -287,6 +297,8 @@ void FSUtil::write_diff_to_file(double delta, const std::string& filename = "dif
     outFile.close();
 }
 
+//terminal amin keresztul lehet kommunikalni az fs-sel, exit command zarja be
+//emlekezteto, a muszer csak akkor valaszol ha a parancs tartalmaz ?-t
 void FSUtil::scpi_terminal(){
     if(connected){
         std::string command;
@@ -304,6 +316,9 @@ void FSUtil::scpi_terminal(){
     }
 }
 
+//string a meres kezdesenek idopontjahoz
+//ez az idopont ket masodperccel lesz tobb mint a jelenlegi idopont
+//illetve a masodperc tort resze 0.650000000000 lesz, mivel igy lesz a legkozelebb a kovetkezo masodperc kezdetehez testelesek alapjan
 std::string FSUtil::start_time(){
     if(connected){
         fs740_write("syst:time?\n");
@@ -328,7 +343,7 @@ std::string FSUtil::start_time(){
             }
 
             std::ostringstream new_time;
-            new_time << hour << "," << minute << "," << (int)second << ".650000000000"; //egyelőre .982 a vége mivel kb így lesz közel az új másodperc kezdetéhez
+            new_time << hour << "," << minute << "," << (int)second << ".650000000000"; //egyelőre .65 a vége mivel kb így lesz közel az új másodperc kezdetéhez
             return new_time.str();
         }
         else
@@ -337,6 +352,8 @@ std::string FSUtil::start_time(){
     return std::string("Not connected");
 }
 
+//elokesziteni a merest a muszeren
+//ez a start jele lesz a timetaggernek
 void FSUtil::measure_setup(){
     if(connected){
         fs740_write("sour3:func puls\n");
@@ -346,6 +363,7 @@ void FSUtil::measure_setup(){
     }
 }
 
+//idokulonbseg merese a gps es a gep ora kozott, ezt is teszteleshez hasznaltam
 void FSUtil::measure_timedrift(int steps){
     if(connected){
         for(int i = 0; i < steps; i++){
@@ -367,6 +385,7 @@ void FSUtil::measure_timedrift(int steps){
     }
 }
 
+//stringkent megadja a gps orajat
 std::string FSUtil::print_gpstime(){
     if(connected){
         fs740_write("syst:time?\n");
@@ -377,6 +396,7 @@ std::string FSUtil::print_gpstime(){
     return std::string("Not connected");
 }
 
+//segedfuggveny, megmondja hogy egy string tartalmaz-e egy masikat
 bool FSUtil::is_in(const char* str, const char* substr){
     std::string _str = str;
     std::string _substr = substr;

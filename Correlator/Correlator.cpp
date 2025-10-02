@@ -1,5 +1,7 @@
 ﻿#include "Correlator.h"
 
+//fuggveny ami beolvassa a binaris adatfajlokat, feltolti a buff1, buff2 fftw komplex tomboket
+//hisztogramot keszit a beolvasott adatokbol
 size_t Correlator::read_data(const std::string& filePath, int buffId, uint64_t tau, size_t chunkSize, size_t N,
     size_t* hin, double* hout, size_t Nbin, size_t Tbin, uint64_t Tshift)
 {
@@ -12,7 +14,7 @@ size_t Correlator::read_data(const std::string& filePath, int buffId, uint64_t t
     size_t buffSize = 0, s = 0;
     std::vector<uint64_t> tmpBuff(chunkSize);
 
-    // Clear the FFTW buffers
+    // bufferek nullazasa
     for (size_t k = 0; k < N; ++k) {
         if (buffId == 1) {
             buff1[k][0] = 0.0;
@@ -24,7 +26,6 @@ size_t Correlator::read_data(const std::string& filePath, int buffId, uint64_t t
         }
     }
 
-    // Reset histogram
     std::fill(hin, hin + Nbin, 0);
 
     while (inFile.read(reinterpret_cast<char*>(tmpBuff.data()), chunkSize * sizeof(uint64_t))
@@ -34,6 +35,8 @@ size_t Correlator::read_data(const std::string& filePath, int buffId, uint64_t t
         buffSize += numRead;
 
         for (size_t k = 0; k + 1 < numRead; k += 2) {
+            //azert ilyen formatumban vannak az adatok mert minden masodik adat a masodperc szamlalo
+            //az elso adat pedig az masodperc ota eltelt idot
             uint64_t totalTime = (tmpBuff[k] + Tshift) + (tmpBuff[k + 1] * 1e12);
             size_t r = (size_t)(totalTime / tau) % N;
             if (buffId == 1) {
@@ -45,6 +48,7 @@ size_t Correlator::read_data(const std::string& filePath, int buffId, uint64_t t
         }
 
         if (s == 0) {
+            //adatok kiirasa ellenorzeskeppen
             print_uintvec("tmp_buff", tmpBuff.data(), std::min<size_t>(10, numRead));
         }
 
@@ -56,6 +60,7 @@ size_t Correlator::read_data(const std::string& filePath, int buffId, uint64_t t
     return buffSize;
 }
 
+//kiir egy uint64_t vectort a standard error kimenetre
 void Correlator::print_uintvec(const char* name, uint64_t* v, size_t n)
 {
     for (size_t k = 0; k < n; k++) {
@@ -63,6 +68,7 @@ void Correlator::print_uintvec(const char* name, uint64_t* v, size_t n)
     }
 }
 
+//kiszamolja egy double vectornak az atlagat
 double Correlator::vec_mean(double* v, size_t n)
 {
     double buff = 0;
@@ -72,6 +78,7 @@ double Correlator::vec_mean(double* v, size_t n)
     return buff / n;
 }
 
+//kiszamolja egy double vectornak a szorasat
 double Correlator::vec_variance(double* v, double vmean, size_t n)
 {
     double buff = 0;
@@ -81,6 +88,7 @@ double Correlator::vec_variance(double* v, double vmean, size_t n)
     return sqrt(buff / (n - 1));
 }
 
+//kiszamolja egy uint64_t vector atlagos kulonbseget
 double Correlator::dTmean(uint64_t* v, size_t N)
 {
     double dt = 0;
@@ -112,6 +120,8 @@ void Correlator::hist_norm(uint64_t* hin, double* hout, size_t Nbin) {
     }
 }
 
+//fourier transzformacioval kiszamolja a ket buffert korrelaciojat
+//es visszater a korrelacio maximumaval es helyevel
 Vmax Correlator::CalculateDeltaT(size_t N) {
     fftw_complex* buff1_c, * buff2_c;
     fftw_complex* cbuff, * cbuff_c;
@@ -172,6 +182,7 @@ Vmax Correlator::CalculateDeltaT(size_t N) {
     return Smax;
 }
 
+//megkeresi egy double vector maximumat es helyet
 Vmax Correlator::rmax(double* v, size_t N) {
     Vmax m;
     m.max = v[0];
@@ -184,6 +195,7 @@ Vmax Correlator::rmax(double* v, size_t N) {
     return m;
 }
 
+//megkeresi egy double vector minimumat es helyet
 Vmin Correlator::rmin(double* v, size_t N) {
     Vmin m;
     m.min = v[0];
@@ -196,12 +208,14 @@ Vmin Correlator::rmin(double* v, size_t N) {
     return m;
 }
 
+//kiirja a hisztogramokat egy fajlba
 void Correlator::print_hist(double* h1, double* h2, size_t Nbin) {
     for (size_t k = 1; k < Nbin; ++k) {
         dataFile << h1[k] << ", " << h2[k] << "\n";
     }
 }
 
+//kiir egy komplex vector a standard error kimenetre
 void Correlator::print_cvec(char* name, std::complex<double>* v, size_t n)
 {
     for (size_t k = 0; k < n; k++) {
@@ -210,6 +224,7 @@ void Correlator::print_cvec(char* name, std::complex<double>* v, size_t n)
     }
 }
 
+//kiir egy double vector a standard error kimenetre
 void Correlator::print_rvec(char* name, double* v, size_t n)
 {
     for (size_t k = 0; k < n; k++) {
@@ -217,6 +232,7 @@ void Correlator::print_rvec(char* name, double* v, size_t n)
     }
 }
 
+//fajl meretet adja vissza byte-ban, azert kell mivel a zajszurest a nagyobb fajlra csinaljuk
 size_t Correlator::get_file_size(const char* fname) {
     std::ifstream file(fname, std::ios::binary | std::ios::ate);
     if (!file) {
@@ -226,6 +242,7 @@ size_t Correlator::get_file_size(const char* fname) {
     return static_cast<size_t>(file.tellg());
 }
 
+//binaris keresessel megnezi hogy egy adott ertek benne van-e akarmelyik hatar kozott
 bool Correlator::is_target_in_bound(Bound arr[], size_t size, uint64_t target) {
     size_t left = 0, right = size;
     while (left < right) {
@@ -238,6 +255,7 @@ bool Correlator::is_target_in_bound(Bound arr[], size_t size, uint64_t target) {
     return (left < size) && (arr[left].lower <= target && target <= arr[left].upper);
 }
 
+//a zajszurest altal megjelolt ertekeket torli a fajlbol
 void Correlator::delete_marked_values(const char* fname) {
     std::cerr << "Deletion begins for marked values\n";
 
@@ -253,11 +271,13 @@ void Correlator::delete_marked_values(const char* fname) {
         return;
     }
 
+    //eloszor atmesolja az adatokat egy ideiglenes fajlba, kihagyva a torlendo ertekeket
     std::vector<uint64_t> buffer(chunk_size);
     size_t chunkCnt = 0;
     while (inFile.read(reinterpret_cast<char*>(buffer.data()), buffer.size() * sizeof(uint64_t)) || inFile.gcount()) {
         size_t readCount = inFile.gcount() / sizeof(uint64_t);
         for (size_t i = 0; i < readCount; ++i) {
+            //marked vector tartalmazza a torlendo ertekek indexeit (chunkCnt * chunk_size + i az index)
             if (!std::binary_search(marked.begin(), marked.end(), chunkCnt * chunk_size + i)) {
                 tempFile.write(reinterpret_cast<char*>(&buffer[i]), sizeof(uint64_t));
             }
@@ -267,7 +287,7 @@ void Correlator::delete_marked_values(const char* fname) {
     inFile.close();
     tempFile.close();
 
-    // Copy back to original
+    //majd visszairja az adatokat az eredeti fajlba
     std::ifstream tempIn("temp.bin", std::ios::binary);
     std::ofstream outFile(fname, std::ios::binary | std::ios::trunc);
     if (!tempIn || !outFile) {
@@ -284,6 +304,7 @@ size_t Correlator::get_delay_estimate() {
     return 10000;
 }
 
+//zajszures azon az alapon hogy azokat az ertekeket torli a nagyobb fajlbol aminek nincs megfelelo parja a kisebb fajlban
 void Correlator::noise_reduc_bound(const char* fp1, const char* fp2) {
     std::cerr << "noise reduc bound begin\n";
     size_t size1 = get_file_size(fp1);
@@ -292,6 +313,8 @@ void Correlator::noise_reduc_bound(const char* fp1, const char* fp2) {
 
     const char* larger_fp_name = (size1 > size2) ? fp1 : fp2;
     const char* smaller_fp_name = (size1 < size2) ? fp1 : fp2;
+
+    //nincs kulonosebb oka miert pont ennyi, eloszor ezt irtam be es mukodott azota nem valtoztattam rajta
     size_t bound_size = 10000;
 
     std::ifstream smallerFile(smaller_fp_name, std::ios::binary);
@@ -308,6 +331,7 @@ void Correlator::noise_reduc_bound(const char* fp1, const char* fp2) {
     size_t k = 0;
     size_t delay = get_delay_estimate();
 
+    //elso korben meghatarozza a kisebb fajl minden egyes ertekere a hatarokat
     std::cerr << "Determining bounds\n";
     while (smallerFile.read(reinterpret_cast<char*>(datapoints.data()), datapoints.size() * sizeof(uint64_t)) || smallerFile.gcount()) {
         size_t readCount = smallerFile.gcount() / sizeof(uint64_t);
@@ -325,6 +349,8 @@ void Correlator::noise_reduc_bound(const char* fp1, const char* fp2) {
         return;
     }
 
+    //masodik korben megnezi hogy a nagyobb fajl minden egyes erteke benne van-e a kisebb fajl hatarai kozott
+    //ami nem az bekerul a marked vectorba
     std::cerr << "Marking values outside of bounds\n";
     size_t chunkCnt = 0;
     marked.clear();
@@ -341,10 +367,15 @@ void Correlator::noise_reduc_bound(const char* fp1, const char* fp2) {
     }
     largerFile.close();
 
+    //rendezni kell hogy gyors legyen a kereses a delete_marked_values fuggvenyben
+    //elmeletileg mar alapbol rendezve kellene lennie mivel sorban olvassa be a fajlt
+    //de biztos ami biztos, plusz volt amikor nem mukodott enelkul, remelem nem egy masik hiba miatt
     std::sort(marked.begin(), marked.end());
     delete_marked_values(larger_fp_name);
 }
 
+//sok kicsi fajl osszefuzese egy nagyobb fajlba, mikozben minden ertekhez hozzad egy adott delay-t
+//a delay az korabban tesztelesre kellett, a valosagban mar benne van az adatokban, de benne hagytam a fuggvenyben hatha kesobb is lesz teszteles
 void Correlator::copyFiles(const std::vector<std::string>& inputPaths, const char* outputPath, size_t delay) {
     std::ofstream outputFile(outputPath, std::ios::binary | std::ios::trunc);
     if (!outputFile) {
@@ -372,18 +403,20 @@ void Correlator::copyFiles(const std::vector<std::string>& inputPaths, const cha
     }
 }
 
-
+//korrelacio futtatasa
 int Correlator::runCorrelation(bool reducStr, const std::vector<std::string>& dataset1Path, const std::vector<std::string>& dataset2Path, uint64_t tauInput)
 {
     time_t t0 = time(NULL);
 
     this->tau = tauInput;
 
-    copyFiles(dataset1Path, this->modifialbe_dataset1, 0);
-    copyFiles(dataset2Path, this->modifialbe_dataset2, 0);
+    //azert kell mert tobb fajlbol all a bemenet, illetve nem akarunk torolni az eredeti adatokbol
+    copyFiles(dataset1Path, this->modifiable_dataset1, 0);
+    copyFiles(dataset2Path, this->modifiable_dataset2, 0);
 
+    //zajszures ha kell
     if (reducStr) {
-        noise_reduc_bound(this->modifialbe_dataset1, this->modifialbe_dataset2);
+        noise_reduc_bound(this->modifiable_dataset1, this->modifiable_dataset2);
     }
 
     this->buff1 = fftw_alloc_complex(this->N);
@@ -395,7 +428,7 @@ int Correlator::runCorrelation(bool reducStr, const std::vector<std::string>& da
         return EXIT_FAILURE;
     }
 
-    std::string dataset1 = this->modifialbe_dataset1;
+    std::string dataset1 = this->modifiable_dataset1;
     this->buff1_size = read_data(dataset1, 1,
         this->tau,
         this->chunk_size,
@@ -406,7 +439,7 @@ int Correlator::runCorrelation(bool reducStr, const std::vector<std::string>& da
         this->Tbin,
         this->Tshift);
 
-    std::string dataset2 = this->modifialbe_dataset2;
+    std::string dataset2 = this->modifiable_dataset2;
     this->buff2_size = read_data(dataset2, 2,
         this->tau,
         this->chunk_size,
