@@ -404,7 +404,7 @@ void Correlator::copyFiles(const std::vector<std::string>& inputPaths, const cha
 }
 
 //korrelacio futtatasa
-int Correlator::runCorrelation(bool reducStr, const std::vector<std::string>& dataset1Path, const std::vector<std::string>& dataset2Path, uint64_t tauInput)
+uint64_t Correlator::runCorrelation(bool reducStr, const std::vector<std::string>& dataset1Path, const std::vector<std::string>& dataset2Path, uint64_t tauInput)
 {
     time_t t0 = time(NULL);
 
@@ -460,5 +460,5 @@ int Correlator::runCorrelation(bool reducStr, const std::vector<std::string>& da
     this->buff2 = nullptr;
 
     fprintf(stderr, "Futasi ido: %ld\n", (long)(time(NULL) - t0));
-    return EXIT_SUCCESS;
+    return this->tau * (uint64_t)smax.kmax;
 }

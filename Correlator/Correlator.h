@@ -102,5 +102,5 @@ public:
     size_t get_delay_estimate(); //visszaad egy becsult delay erteket, ez attol fugg hogy a valosagban mit becslunk kesleltetesnek a ket allomas kozott
     void noise_reduc_bound(const char*, const char*); //zajszures
     void copyFiles(const std::vector<std::string>&, const char*, size_t); //sok kicsi fajl osszefuzese egy nagyobb fajlba, mikozben minden ertekhez hozzad egy adott delay-t
-    int runCorrelation(bool, const std::vector<std::string>&, const std::vector<std::string>&, uint64_t); //korrelacio futtatasa
+    uint64_t runCorrelation(bool, const std::vector<std::string>&, const std::vector<std::string>&, uint64_t); //korrelacio futtatasa
 };

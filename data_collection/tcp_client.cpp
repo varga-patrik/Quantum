@@ -10,9 +10,9 @@
 #include <stdio.h>
 #include <iostream>
 #include <sstream>
-#include "fs_util.h"
-#include "KinesisUtil.h"
-#include "Correlator.h"
+#include "fs740/fs_util.h"
+#include "kinesis/KinesisUtil.h"
+#include "Correlator/Correlator.h"
 #include "direct.h"
 
 #pragma comment (lib, "Ws2_32.lib")
@@ -22,6 +22,26 @@
 
 #define DEFAULT_BUFLEN 512
 #define DEFAULT_PORT "27015"
+
+std::vector<std::string> uploadFiles(const std::string& folder, const std::string& condition) {
+    std::vector<std::string> files;
+
+    try {
+        for (const auto& entry : std::filesystem::directory_iterator(folder)) {
+            if (!entry.is_regular_file()) continue; 
+            std::string filename = entry.path().filename().string();
+
+            if (filename.find(condition) != std::string::npos) {
+                files.push_back(entry.path().string());
+            }
+        }
+    }
+    catch (const std::filesystem::filesystem_error& e) {
+        std::cerr << "Filesystem error: " << e.what() << std::endl;
+    }
+
+    return files;
+}
 
 int main(int argc, char **argv) 
 {
@@ -107,23 +127,72 @@ int main(int argc, char **argv)
     //akkor valamelyik oldalon ki kell kommentelni a parancsok lefuttatasat, mivel mindket eszkoz ugyanazokkal a muszerekkel kommunikalna
     //nem tudom pontosan mekkora lenne a kar, valoszinuleg csak egy error az egyik oldalon, de ezek a muszerek eleg dragak, nem kockaztatnam
     //--------------------------------------------------------
+
+    //KinesisUtil device_bme_4("12345679");
+    //KinesisUtil device_bme_2("12345679");
+    KinesisUtil device_wigner_4("12345897");
+    KinesisUtil device_wigner_2("12345897");
+
+    Correlator correlator(100000, (1ULL << 16));
+
+    double rotation_stages[19] = { 0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90 }
+    int counter_wigner_4 = 0;
+    int counter_wigner_2 = 0;
+
+    std::vector<uint64_t> results;
+
     while(!fs.is_same_str(sendbuf.c_str(), "exit")){
         std::ostringstream path;
         std::cout << "Type here: ";
         std::cin >> sendbuf; 
 
         //setup parancs elokesziti a muszereket a meresre
-        /*if(fs.is_same_str(sendbuf.c_str(), "setup")){
+        if(fs.is_same_str(sendbuf.c_str(), "setup")){
             fs.measure_setup();
             path.clear();
             path << "\"" << pathbuffer << "\\timetagger_setup.py\"";
             fs.run(path.str());
-        }*/
+        }
 
         //meg a start futtatasa elott a kliens kituzi a meres idejet es igy kuldi el ezt a masik oldalnak
         if(fs.is_same_str(sendbuf.c_str(), "start")){
             sendbuf += " ";
             sendbuf += fs.start_time();
+        }
+
+        if (fs.is_same_str(sendbuf.c_str()), "rotate") {
+            if (counter_wigner_2 == 18) {
+
+                std::vector<std::string> dataset1 = uploadFiles("./data", "bme");
+                std::vector<std::string> dataset2 = uploadFiles("./data", "wigner");
+                results.push_back(correlator.runCorrelation(true, dataset1, dataset2, 500));
+
+                if (!device_wigner_4.moveToPosition(rotation_stages[counter_wigner_4])) {
+                    std::cout << "ERROR with wigner 4" << std::endl;
+                }
+
+                if (!device_wigner_2.moveToPosition(rotation_stages[counter_wigner_2])) {
+                    std::cout << "ERROR with wigner 2" << std::endl;
+                }
+                counter_wigner_2 = 0;
+                counter_wigner_4++;
+            }
+            else {
+
+                std::vector<std::string> dataset1 = uploadFiles("./data", "bme");
+                std::vector<std::string> dataset2 = uploadFiles("./data", "wigner");
+                results.push_back(correlator.runCorrelation(true, dataset1, dataset2, 500));
+
+                if (!device_wigner_4.moveToPosition(rotation_stages[counter_wigner_4])) {
+                    std::cout << "ERROR with wigner 4" << std::endl;
+                }
+
+                if (!device_wigner_2.moveToPosition(rotation_stages[counter_wigner_2])) {
+                    std::cout << "ERROR with wigner 2" << std::endl;
+                }
+
+                counter_wigner_2++;
+            }
         }
 
         iResult = send( ConnectSocket, sendbuf.c_str(), DEFAULT_BUFLEN, 0 );
@@ -136,13 +205,36 @@ int main(int argc, char **argv)
         }
 
         //ez a meres, a program megvarja a kezdes idopontjat es lefuttatja a merest
-        /*else if(sendbuf.find("start")!=std::string::npos){
+        else if(sendbuf.find("start")!=std::string::npos){
             fs.wait_until(sendbuf.substr(6).c_str());
             path.clear();
             path << "\"" << pathbuffer << "\\timestamps_acquisition.py\"";
             fs.run(path.str());
-        }*/
+        }
     }
+
+    uint64_t maxValue = 0;
+    size_t maxIndex = 0;
+
+    for (size_t i = 0; i < results.size(); i++) {
+        if (results[i] > maxValue) {
+            maxValue = results[i];
+            maxIndex = i;
+        }
+    }
+
+    // reconstruct which angles correspond to this measurement
+    int totalStages = 19;
+    int hwpIndex = static_cast<int>(maxIndex / totalStages);
+    int qwpIndex = static_cast<int>(maxIndex % totalStages);
+
+    double bestHwpAngle = rotation_stages[hwpIndex];
+    double bestQwpAngle = rotation_stages[qwpIndex];
+
+    std::cout << "\n=== BEST RESULT ===" << std::endl;
+    std::cout << "Max correlation value: " << maxValue << std::endl;
+    std::cout << "Wigner 4 angle: " << bestHwpAngle << " degrees" << std::endl;
+    std::cout << "Wigner 2 angle: " << bestQwpAngle << " degrees" << std::endl;
 
     // shutdown the connection since no more data will be sent
     iResult = shutdown(ConnectSocket, SD_SEND);
