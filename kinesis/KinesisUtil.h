@@ -4,7 +4,7 @@
 #include <conio.h>
 #include <iostream>
 //nyilvan kell hogy telepitve legyen, es hogy megfelelo konyvtarban legyen
-#include "C:\Program Files\Thorlabs\Kinesis\Thorlabs.MotionControl.IntegratedStepperMotors.h"
+#include "Thorlabs.MotionControl.IntegratedStepperMotors.h"
 
 class KinesisUtil {
 private:
@@ -41,6 +41,9 @@ public:
 	}
 	void deactivate() {
 		active = false;
+	}
+	bool isActive() {
+		return active;
 	}
 
 	//minden fuggveny meghivja a nevehez tartozo fuggvenyet az eszkoznek, illetve ellenorzi a kapcsolatot es az aktiv allapotot

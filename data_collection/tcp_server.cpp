@@ -13,9 +13,9 @@
 #include <iostream>
 #include <filesystem>
 #include <sstream>
-#include "fs740/fs_util.h"
-#include "kinesis/KinesisUtil.h"
-#include "Correlator/Correlator.h"
+#include <vector>
+#include "fs_util.h"
+#include "KinesisUtil.h"
 #include "direct.h"
 
 // Need to link with Ws2_32.lib
@@ -45,6 +45,57 @@ std::vector<std::string> uploadFiles(const std::string& folder, const std::strin
     return files;
 }
 
+void sendFile(SOCKET clientSocket, const std::string& filePath) {
+    // Open the file
+    std::ifstream file(filePath, std::ios::binary);
+    if (!file) {
+        std::cerr << "Failed to open file: " << filePath << std::endl;
+        return;
+    }
+
+    size_t chunkSize = DEFAULT_BUFLEN;
+    uint64_t* dataPoints = new uint64_t[chunkSize];
+    while (file.read(reinterpret_cast<char*>(dataPoints), chunkSize * sizeof(uint64_t)) || file.gcount()) {
+        size_t readCount = file.gcount() / sizeof(uint64_t);
+        char* buffer = new char[readCount];
+        for(size_t i = 0; i < readCount; ++i) {
+            buffer[i] = static_cast<char>(dataPoints[i] & 0xFF); 
+        }
+        //send read count bytes, make sure the client gets 3 bytes at a time
+        char readCountBuffer[3];
+        readCountBuffer[0] = static_cast<char>((readCount >> 16) & 0xFF);
+        readCountBuffer[1] = static_cast<char>((readCount >> 8) &   0xFF);
+        readCountBuffer[2] = static_cast<char>(readCount & 0xFF);
+        int errorCode = send(clientSocket, readCountBuffer, 3, 0);
+        if (errorCode == SOCKET_ERROR) {
+            std::cerr << "Failed to send read count for file: " << filePath << std::endl;
+            break;
+        }
+
+        errorCode = send(clientSocket, buffer, readCount, 0);
+        if (errorCode == SOCKET_ERROR) {
+            std::cerr << "Failed to send file: " << filePath << std::endl;
+            break;
+        }
+        delete[] buffer;
+    }
+    delete[] dataPoints;
+
+    //Send end-of-file marker and file name
+    std::string eofMarker = "EOF " + std::filesystem::path(filePath).filename().string();
+
+    //send the length of the eof marker in 3 bytes followed by the eof marker itself
+    size_t eofMarkerSize = eofMarker.size();
+    int errorCode = send(clientSocket, reinterpret_cast<const char*>(&eofMarkerSize), 3, 0);
+
+    errorCode = send(clientSocket, eofMarker.c_str(), eofMarker.size(), 0);
+    if (errorCode == SOCKET_ERROR) {
+        std::cerr << "Failed to send EOF marker for file: " << filePath << std::endl;
+    }
+
+    file.close();
+}
+
 int main(void) 
 {
     WSADATA wsaData;
@@ -63,7 +114,7 @@ int main(void)
     //kapcsolat felepitese a gps oraval, output stringhez nem tartozik erdemi funkcio, azt korabban tesztelesre hasznaltam
     std::string ip_text = "148.6.27.165";
     std::string output = "diff_data.csv";
-    FSUtil fs(6000, ip_text, output);
+    FSUtil fs(5, ip_text, output);
 
     char pathbuffer[1024];
     getcwd(pathbuffer, 1024);
@@ -146,8 +197,6 @@ int main(void)
     device_wigner_2.home();
     device_wigner_4.home();
 
-    Correlator correlator(100000, (1ULL << 16));
-
     double rotation_stages[19] = { 0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90 };
     int counter_wigner_4 = 0;
     int counter_wigner_2 = 0;
@@ -160,7 +209,7 @@ int main(void)
         if (iResult > 0) {
 
             //setup parancs elokesziti a muszereket a meresre
-            if(fs.is_same_str(recvbuf, "setup")){
+            /*if(fs.is_same_str(recvbuf, "setup")){
                 fs.measure_setup();
                 path.clear();
                 path << "\"" << pathbuffer << "\\timetagger_setup.py\"";
@@ -173,7 +222,7 @@ int main(void)
                 path.clear();
                 path << "\"" << pathbuffer << "\\timestamps_acquisition.py\"";
                 fs.run(path.str());
-            }
+            }*/
 
             if(fs.is_same_str(recvbuf, "activate wigner")){
                 device_wigner_2.activate();
@@ -185,34 +234,50 @@ int main(void)
                 device_wigner_4.deactivate();
             }
 
+            if(fs.is_same_str(recvbuf, "read_data_file")){
+                std::vector<std::string> files = uploadFiles("./data", "bme");
+                for (const auto& file : files) {
+                    sendFile(ClientSocket, file);
+                }
+
+                //Send end-of-transmission marker
+                int errorCode = send(ClientSocket, "EOT", 3, 0);
+                if (errorCode == SOCKET_ERROR) {
+                    std::cerr << "Failed to send EOT marker" << std::endl;
+                }
+            }
+
             if (fs.is_same_str(recvbuf, "rotate")) {
-                if (counter_wigner_2 == 18) {
+                if(device_wigner_2.isActive() && device_wigner_4.isActive()){
+                    
+                    if (counter_wigner_2 == 18) {
 
-                    if (!device_wigner_4.moveToPosition(rotation_stages[counter_wigner_4])) {
-                        std::cout << "ERROR with wigner 4" << std::endl;
+                        if (!device_wigner_4.moveToPosition(rotation_stages[counter_wigner_4])) {
+                            std::cout << "ERROR with wigner 4" << std::endl;
+                        }
+
+                        if (!device_wigner_2.moveToPosition(rotation_stages[counter_wigner_2])) {
+                            std::cout << "ERROR with wigner 2" << std::endl;
+                        }
+                        counter_wigner_2 = 0;
+                        counter_wigner_4++;
+                    }
+                    else {
+
+                        if (!device_wigner_4.moveToPosition(rotation_stages[counter_wigner_4])) {
+                            std::cout << "ERROR with wigner 4" << std::endl;
+                        }
+
+                        if (!device_wigner_2.moveToPosition(rotation_stages[counter_wigner_2])) {
+                            std::cout << "ERROR with wigner 2" << std::endl;
+                        }
+
+                        counter_wigner_2++;
                     }
 
-                    if (!device_wigner_2.moveToPosition(rotation_stages[counter_wigner_2])) {
-                        std::cout << "ERROR with wigner 2" << std::endl;
-                    }
-                    counter_wigner_2 = 0;
-                    counter_wigner_4++;
+                    std::cout<< "Current position: "<< std::endl << "Wigner4: " << rotation_stages[counter_wigner_4] 
+                    << std::endl << "Wigner2: " << rotation_stages[counter_wigner_2] << std::endl; 
                 }
-                else {
-
-                    if (!device_wigner_4.moveToPosition(rotation_stages[counter_wigner_4])) {
-                        std::cout << "ERROR with wigner 4" << std::endl;
-                    }
-
-                    if (!device_wigner_2.moveToPosition(rotation_stages[counter_wigner_2])) {
-                        std::cout << "ERROR with wigner 2" << std::endl;
-                    }
-
-                    counter_wigner_2++;
-                }
-
-                std::cout<< "Current position: "<< std::endl << "Wigner4: " << rotation_stages[counter_wigner_4] 
-                << std::endl << "Wigner2: " << rotation_stages[counter_wigner_2] << std::endl; 
             }
 
             std::cout << std::endl << "Recieved: " << recvbuf << std::endl;

@@ -6,7 +6,9 @@
                 "${workspaceFolder}/**",
                 "${vcpkgRoot}/x64-windows/include",
                 "${vcpkgRoot}/x64-windows-static/include",
-                "${workspaceFolder}"
+                "${workspaceFolder}",
+                "C:/Program Files/Thorlabs/Kinesis",
+                "${workspaceFolder}/fs740"
             ],
             "defines": [
                 "_DEBUG",

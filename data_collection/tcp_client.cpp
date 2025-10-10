@@ -8,12 +8,13 @@
 #include <ws2tcpip.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <vector>
 #include <iostream>
 #include <filesystem>
 #include <sstream>
-#include "fs740/fs_util.h"
-#include "kinesis/KinesisUtil.h"
-#include "Correlator/Correlator.h"
+#include "fs_util.h"
+#include "KinesisUtil.h"
+//#include "Correlator/Correlator.h"
 #include "direct.h"
 
 #pragma comment (lib, "Ws2_32.lib")
@@ -44,6 +45,60 @@ std::vector<std::string> uploadFiles(const std::string& folder, const std::strin
     return files;
 }
 
+void readRecievingFile(SOCKET ConnectSocket) {
+
+    char recvbuf[DEFAULT_BUFLEN];
+    int iResult;
+    int readCount = 3;
+    do {
+        
+        iResult = recv(ConnectSocket, recvbuf, readCount, 0);
+        
+        if (iResult > 0) {
+            std::cout << "Bytes received: " << iResult << std::endl;
+            
+            if(iResult == 3){
+                //if the received data is only 3 bytes, it is the read count
+                readCount = (static_cast<unsigned char>(recvbuf[0]) << 16) |
+                                (static_cast<unsigned char>(recvbuf[1]) << 8) |
+                                static_cast<unsigned char>(recvbuf[2]);
+                continue;
+            }
+
+            else {
+                //make a temporary file to store the incoming data
+                std::ofstream outFile("received_data.bin", std::ios::binary | std::ios::app);
+                if (!outFile) {
+                    std::cerr << "Error creating file to store received data." << std::endl;
+                    return;
+                }
+
+                //check if the received data is the EOF marker and file name
+                std::string recvStr(recvbuf);
+                if (recvStr.find("EOF ", 0) != std::string::npos) {
+                    std::string fileName = recvStr.substr(4);
+                    outFile.close();
+                    std::filesystem::rename("received_data.bin", fileName);
+                    std::cout << "Received end-of-file marker. Data saved to " << fileName << std::endl;
+                    break;
+                }
+
+                //cast the received data to uint64_t and write to file
+                for (int i = 0; i < iResult; ++i) {
+                    uint64_t dataPoint = static_cast<uint64_t>(recvbuf[i]);
+                    outFile.write(reinterpret_cast<char*>(&dataPoint), sizeof(uint64_t));
+                }
+            }
+            readCount = 3; //reset read count to 3 to read the next chunk size
+        }
+        else if (iResult == 0)
+            std::cout << "Connection closed" << std::endl;
+        else
+            std::cout << "recv failed with error: " << WSAGetLastError() << std::endl;
+
+    } while( iResult > 0 );
+}
+
 int main(int argc, char **argv) 
 {
     WSADATA wsaData;
@@ -59,7 +114,7 @@ int main(int argc, char **argv)
     //kapcsolat felepitese a gps oraval, output stringhez nem tartozik erdemi funkcio, azt korabban tesztelesre hasznaltam
     std::string ip_text = "148.6.27.165";
     std::string output = "diff_data.csv";
-    FSUtil fs(6000, ip_text, output);
+    FSUtil fs(5, ip_text, output);
 
     char pathbuffer[1024];
     getcwd(pathbuffer, 1024);
@@ -135,7 +190,7 @@ int main(int argc, char **argv)
     device_bme_2.home();
     device_bme_4.home();
 
-    Correlator correlator(100000, (1ULL << 16));
+    //Correlator correlator(100000, (1ULL << 16));
 
     double rotation_stages[19] = { 0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90 };
     int counter_bme_4 = 0;
@@ -173,41 +228,43 @@ int main(int argc, char **argv)
         }
 
         if (fs.is_same_str(sendbuf.c_str(), "rotate")) {
-            if (counter_bme_2 == 18) {
+            if(device_bme_2.isActive() && device_bme_4.isActive()){
+                if (counter_bme_2 == 18) {
 
-                std::vector<std::string> dataset1 = uploadFiles("./data", "bme");
-                std::vector<std::string> dataset2 = uploadFiles("./data", "wigner");
-                results.push_back(correlator.runCorrelation(true, dataset1, dataset2, 500));
+                    std::vector<std::string> dataset1 = uploadFiles("./data", "bme");
+                    std::vector<std::string> dataset2 = uploadFiles("./data", "wigner");
+                    //results.push_back(correlator.runCorrelation(true, dataset1, dataset2, 500));
 
-                if (!device_bme_4.moveToPosition(rotation_stages[counter_bme_4])) {
-                    std::cout << "ERROR with bme 4" << std::endl;
+                    if (!device_bme_4.moveToPosition(rotation_stages[counter_bme_4])) {
+                        std::cout << "ERROR with bme 4" << std::endl;
+                    }
+
+                    if (!device_bme_2.moveToPosition(rotation_stages[counter_bme_2])) {
+                        std::cout << "ERROR with bme 2" << std::endl;
+                    }
+                    counter_bme_2 = 0;
+                    counter_bme_4++;
+                }
+                else {
+
+                    std::vector<std::string> dataset1 = uploadFiles("./data", "bme");
+                    std::vector<std::string> dataset2 = uploadFiles("./data", "wigner");
+                    //results.push_back(correlator.runCorrelation(true, dataset1, dataset2, 500));
+
+                    if (!device_bme_4.moveToPosition(rotation_stages[counter_bme_4])) {
+                        std::cout << "ERROR with bme 4" << std::endl;
+                    }
+
+                    if (!device_bme_2.moveToPosition(rotation_stages[counter_bme_2])) {
+                        std::cout << "ERROR with bme 2" << std::endl;
+                    }
+
+                    counter_bme_2++;
                 }
 
-                if (!device_bme_2.moveToPosition(rotation_stages[counter_bme_2])) {
-                    std::cout << "ERROR with bme 2" << std::endl;
-                }
-                counter_bme_2 = 0;
-                counter_bme_4++;
+                std::cout<< "Current position: "<< std::endl << "BME4: " << rotation_stages[counter_bme_4] 
+                    << std::endl << "BME2: " << rotation_stages[counter_bme_2] << std::endl; 
             }
-            else {
-
-                std::vector<std::string> dataset1 = uploadFiles("./data", "bme");
-                std::vector<std::string> dataset2 = uploadFiles("./data", "wigner");
-                results.push_back(correlator.runCorrelation(true, dataset1, dataset2, 500));
-
-                if (!device_bme_4.moveToPosition(rotation_stages[counter_bme_4])) {
-                    std::cout << "ERROR with bme 4" << std::endl;
-                }
-
-                if (!device_bme_2.moveToPosition(rotation_stages[counter_bme_2])) {
-                    std::cout << "ERROR with bme 2" << std::endl;
-                }
-
-                counter_bme_2++;
-            }
-
-            std::cout<< "Current position: "<< std::endl << "BME4: " << rotation_stages[counter_bme_4] 
-                << std::endl << "Wigner2: " << rotation_stages[counter_bme_2] << std::endl; 
         }
 
         iResult = send( ConnectSocket, sendbuf.c_str(), DEFAULT_BUFLEN, 0 );
@@ -217,6 +274,14 @@ int main(int argc, char **argv)
             closesocket(ConnectSocket);
             WSACleanup();
             return 1;
+        }
+
+        else if(sendbuf.find("read_data_file")!=std::string::npos){
+            //while not end of transmission marker
+            while (!fs.is_same_str(recvbuf, "EOT")) {
+                readRecievingFile(ConnectSocket);
+            }
+            std::cout << "Finished receiving files." << std::endl;
         }
 
         //ez a meres, a program megvarja a kezdes idopontjat es lefuttatja a merest
@@ -248,8 +313,8 @@ int main(int argc, char **argv)
 
     std::cout << "\n=== BEST RESULT ===" << std::endl;
     std::cout << "Max correlation value: " << maxValue << std::endl;
-    std::cout << "Wigner 4 angle: " << bestHwpAngle << " degrees" << std::endl;
-    std::cout << "Wigner 2 angle: " << bestQwpAngle << " degrees" << std::endl;
+    std::cout << "Bme 4 angle: " << bestHwpAngle << " degrees" << std::endl;
+    std::cout << "Bme 2 angle: " << bestQwpAngle << " degrees" << std::endl;
 
     // shutdown the connection since no more data will be sent
     iResult = shutdown(ConnectSocket, SD_SEND);
