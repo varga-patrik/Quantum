@@ -11,9 +11,12 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <iostream>
-#include "fs_util.h"
-#include "direct.h"
+#include <filesystem>
 #include <sstream>
+#include "fs740/fs_util.h"
+#include "kinesis/KinesisUtil.h"
+#include "Correlator/Correlator.h"
+#include "direct.h"
 
 // Need to link with Ws2_32.lib
 #pragma comment (lib, "Ws2_32.lib")
@@ -21,6 +24,26 @@
 
 #define DEFAULT_BUFLEN 512
 #define DEFAULT_PORT "27015"
+
+std::vector<std::string> uploadFiles(const std::string& folder, const std::string& condition) {
+    std::vector<std::string> files;
+
+    try {
+        for (const auto& entry : std::filesystem::directory_iterator(folder)) {
+            if (!entry.is_regular_file()) continue; 
+            std::string filename = entry.path().filename().string();
+
+            if (filename.find(condition) != std::string::npos) {
+                files.push_back(entry.path().string());
+            }
+        }
+    }
+    catch (const std::filesystem::filesystem_error& e) {
+        std::cerr << "Filesystem error: " << e.what() << std::endl;
+    }
+
+    return files;
+}
 
 int main(void) 
 {
@@ -116,6 +139,21 @@ int main(void)
     //akkor valamelyik oldalon ki kell kommentelni a parancsok lefuttatasat, mivel mindket eszkoz ugyanazokkal a muszerekkel kommunikalna
     //nem tudom pontosan mekkora lenne a kar, valoszinuleg csak egy error az egyik oldalon, de ezek a muszerek eleg dragak, nem kockaztatnam
     //--------------------------------------------------------
+
+    KinesisUtil device_wigner_4("12345897");
+    KinesisUtil device_wigner_2("12345897");
+
+    device_wigner_2.home();
+    device_wigner_4.home();
+
+    Correlator correlator(100000, (1ULL << 16));
+
+    double rotation_stages[19] = { 0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90 };
+    int counter_wigner_4 = 0;
+    int counter_wigner_2 = 0;
+
+    std::vector<uint64_t> results;
+
     do {
         std::ostringstream path;
         iResult = recv(ClientSocket, recvbuf, recvbuflen, 0);
@@ -136,6 +174,47 @@ int main(void)
                 path << "\"" << pathbuffer << "\\timestamps_acquisition.py\"";
                 fs.run(path.str());
             }
+
+            if(fs.is_same_str(recvbuf, "activate wigner")){
+                device_wigner_2.activate();
+                device_wigner_4.activate();
+            }
+
+            if(fs.is_same_str(recvbuf, "deactivate wigner")){
+                device_wigner_2.deactivate();
+                device_wigner_4.deactivate();
+            }
+
+            if (fs.is_same_str(recvbuf, "rotate")) {
+                if (counter_wigner_2 == 18) {
+
+                    if (!device_wigner_4.moveToPosition(rotation_stages[counter_wigner_4])) {
+                        std::cout << "ERROR with wigner 4" << std::endl;
+                    }
+
+                    if (!device_wigner_2.moveToPosition(rotation_stages[counter_wigner_2])) {
+                        std::cout << "ERROR with wigner 2" << std::endl;
+                    }
+                    counter_wigner_2 = 0;
+                    counter_wigner_4++;
+                }
+                else {
+
+                    if (!device_wigner_4.moveToPosition(rotation_stages[counter_wigner_4])) {
+                        std::cout << "ERROR with wigner 4" << std::endl;
+                    }
+
+                    if (!device_wigner_2.moveToPosition(rotation_stages[counter_wigner_2])) {
+                        std::cout << "ERROR with wigner 2" << std::endl;
+                    }
+
+                    counter_wigner_2++;
+                }
+
+                std::cout<< "Current position: "<< std::endl << "Wigner4: " << rotation_stages[counter_wigner_4] 
+                << std::endl << "Wigner2: " << rotation_stages[counter_wigner_2] << std::endl; 
+            }
+
             std::cout << std::endl << "Recieved: " << recvbuf << std::endl;
         }
         else if (iResult == 0)

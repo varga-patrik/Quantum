@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <iostream>
+#include <filesystem>
 #include <sstream>
 #include "fs740/fs_util.h"
 #include "kinesis/KinesisUtil.h"
@@ -128,16 +129,17 @@ int main(int argc, char **argv)
     //nem tudom pontosan mekkora lenne a kar, valoszinuleg csak egy error az egyik oldalon, de ezek a muszerek eleg dragak, nem kockaztatnam
     //--------------------------------------------------------
 
-    //KinesisUtil device_bme_4("12345679");
-    //KinesisUtil device_bme_2("12345679");
-    KinesisUtil device_wigner_4("12345897");
-    KinesisUtil device_wigner_2("12345897");
+    KinesisUtil device_bme_4("12345679");
+    KinesisUtil device_bme_2("12345679");
+
+    device_bme_2.home();
+    device_bme_4.home();
 
     Correlator correlator(100000, (1ULL << 16));
 
-    double rotation_stages[19] = { 0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90 }
-    int counter_wigner_4 = 0;
-    int counter_wigner_2 = 0;
+    double rotation_stages[19] = { 0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90 };
+    int counter_bme_4 = 0;
+    int counter_bme_2 = 0;
 
     std::vector<uint64_t> results;
 
@@ -160,22 +162,32 @@ int main(int argc, char **argv)
             sendbuf += fs.start_time();
         }
 
-        if (fs.is_same_str(sendbuf.c_str()), "rotate") {
-            if (counter_wigner_2 == 18) {
+        if(fs.is_same_str(sendbuf.c_str(), "activate bme")){
+            device_bme_2.activate();
+            device_bme_4.activate();
+        }
+
+        if(fs.is_same_str(sendbuf.c_str(), "deactivate bme")){
+            device_bme_2.deactivate();
+            device_bme_4.deactivate();
+        }
+
+        if (fs.is_same_str(sendbuf.c_str(), "rotate")) {
+            if (counter_bme_2 == 18) {
 
                 std::vector<std::string> dataset1 = uploadFiles("./data", "bme");
                 std::vector<std::string> dataset2 = uploadFiles("./data", "wigner");
                 results.push_back(correlator.runCorrelation(true, dataset1, dataset2, 500));
 
-                if (!device_wigner_4.moveToPosition(rotation_stages[counter_wigner_4])) {
-                    std::cout << "ERROR with wigner 4" << std::endl;
+                if (!device_bme_4.moveToPosition(rotation_stages[counter_bme_4])) {
+                    std::cout << "ERROR with bme 4" << std::endl;
                 }
 
-                if (!device_wigner_2.moveToPosition(rotation_stages[counter_wigner_2])) {
-                    std::cout << "ERROR with wigner 2" << std::endl;
+                if (!device_bme_2.moveToPosition(rotation_stages[counter_bme_2])) {
+                    std::cout << "ERROR with bme 2" << std::endl;
                 }
-                counter_wigner_2 = 0;
-                counter_wigner_4++;
+                counter_bme_2 = 0;
+                counter_bme_4++;
             }
             else {
 
@@ -183,16 +195,19 @@ int main(int argc, char **argv)
                 std::vector<std::string> dataset2 = uploadFiles("./data", "wigner");
                 results.push_back(correlator.runCorrelation(true, dataset1, dataset2, 500));
 
-                if (!device_wigner_4.moveToPosition(rotation_stages[counter_wigner_4])) {
-                    std::cout << "ERROR with wigner 4" << std::endl;
+                if (!device_bme_4.moveToPosition(rotation_stages[counter_bme_4])) {
+                    std::cout << "ERROR with bme 4" << std::endl;
                 }
 
-                if (!device_wigner_2.moveToPosition(rotation_stages[counter_wigner_2])) {
-                    std::cout << "ERROR with wigner 2" << std::endl;
+                if (!device_bme_2.moveToPosition(rotation_stages[counter_bme_2])) {
+                    std::cout << "ERROR with bme 2" << std::endl;
                 }
 
-                counter_wigner_2++;
+                counter_bme_2++;
             }
+
+            std::cout<< "Current position: "<< std::endl << "BME4: " << rotation_stages[counter_bme_4] 
+                << std::endl << "Wigner2: " << rotation_stages[counter_bme_2] << std::endl; 
         }
 
         iResult = send( ConnectSocket, sendbuf.c_str(), DEFAULT_BUFLEN, 0 );

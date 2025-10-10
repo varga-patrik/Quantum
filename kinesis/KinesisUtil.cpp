@@ -12,6 +12,7 @@ bool KinesisUtil::connect() {
 //nagyon konnyu egy vegtelen ciklust csinalni, ha rossz id-t adunk meg
 //a leiras szerint egy generic motors eszkozokre (mint amilyen az az eszkoz is amire eredetileg keszult a kod) az alabbi id-k vannak:
 //homed: 0, moved: 1, stopped: 2, limitUpdated: 3
+//message type mindig kettő generic motor eseten
 void KinesisUtil::wait_for_command(WORD type, WORD id) { //id = 0 ha home, mozgasnal 1
     if (connected && active) {
         ISC_WaitForMessage(serialNum.c_str(), &messageType, &messageId, &messageData);
@@ -76,6 +77,7 @@ bool KinesisUtil::home() {
     if (connected && active) {
         std::cout << "Homing " << serialNum << std::endl;
         short errorCode = ISC_Home(serialNum.c_str());
+        wait_for_command(2, 0);
         return errorCode == 0;
     }
     std::cout << "ERROR, not connected or unactive device" << std::endl;
@@ -137,6 +139,7 @@ bool KinesisUtil::moveToPosition(double degree) {
         std::cout << "Moving " << serialNum << std::endl;
         short errorCode;
         errorCode = ISC_MoveToPosition(serialNum.c_str(), getDevice(degree, 0));
+        wait_for_command(2, 1);
         return errorCode == 0;
     }
     std::cout << "ERROR, not connected or unactive device" << std::endl;
@@ -160,6 +163,7 @@ bool KinesisUtil::moveAbs() {
         std::cout << "Moving " << serialNum << std::endl;
         short errorCode;
         errorCode = ISC_MoveAbsolute(serialNum.c_str());
+        wait_for_command(2, 1);
         return errorCode == 0;
     }
     std::cout << "ERROR, not connected or unactive device" << std::endl;
@@ -183,6 +187,7 @@ bool KinesisUtil::moveRel() {
         std::cout << "Moving " << serialNum << std::endl;
         short errorCode;
         errorCode = ISC_MoveRelativeDistance(serialNum.c_str());
+        wait_for_command(2, 1);
         return errorCode == 0;
     }
     std::cout << "ERROR, not connected or unactive device" << std::endl;
