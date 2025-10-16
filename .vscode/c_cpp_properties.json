@@ -6,7 +6,10 @@
                 "${workspaceFolder}/**",
                 "${workspaceFolder}",
                 "C:/Program Files/Thorlabs/Kinesis",
-                "${workspaceFolder}/fs740"
+                "${workspaceFolder}/fs740",
+                "${workspaceFolder}/Correlator",
+                "${workspaceFolder}/kinesis",
+                "C:/"
             ],
             "defines": [
                 "_DEBUG",

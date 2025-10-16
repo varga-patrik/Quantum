@@ -14,7 +14,7 @@
 #include <sstream>
 #include "fs_util.h"
 #include "KinesisUtil.h"
-//#include "Correlator/Correlator.h"
+#include "Correlator.h"
 #include "direct.h"
 
 #pragma comment (lib, "Ws2_32.lib")

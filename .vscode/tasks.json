@@ -12,12 +12,23 @@
                 "${workspaceFolder}\\fs740\\fs_util.cpp",
                 "-o",
                 "${fileDirname}\\${fileBasenameNoExtension}.exe",
+
+                // Existing libraries
                 "-lws2_32",
                 "-L\"C:\\Program Files\\Thorlabs\\Kinesis\"",
                 "-lThorlabs.MotionControl.IntegratedStepperMotors",
+
+                // Existing include dirs
                 "-I${workspaceFolder}\\kinesis",
                 "-I${workspaceFolder}\\fs740",
+                "-I${workspaceFolder}\\Correlator",
                 "-I\"C:\\Program Files\\Thorlabs\\Kinesis\"",
+
+                // >>> ADD THESE LINES FOR FFTW <<<
+                "-I\"C:\\Users\\Varga Patrik\\Desktop\\util\\fftw-3.3.5-dll64\"",
+                "-L\"C:\\Users\\Varga Patrik\\Desktop\\util\\fftw-3.3.5-dll64\"",
+                "-lfftw3"
+                // <<< END ADDITION >>>
             ],
             "options": {
                 "cwd": "${fileDirname}"
