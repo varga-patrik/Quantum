@@ -25,6 +25,16 @@
 #define DEFAULT_BUFLEN 512
 #define DEFAULT_PORT "27015"
 
+int recvAll(SOCKET socket, char* buffer, int length) {
+    int totalReceived = 0;
+    while (totalReceived < length) {
+        int bytesReceived = recv(socket, buffer + totalReceived, length - totalReceived, 0);
+        if (bytesReceived <= 0) return bytesReceived; // error or closed
+        totalReceived += bytesReceived;
+    }
+    return totalReceived;
+}
+
 std::vector<std::string> uploadFiles(const std::string& folder, const std::string& condition) {
     std::vector<std::string> files;
 
@@ -45,58 +55,46 @@ std::vector<std::string> uploadFiles(const std::string& folder, const std::strin
     return files;
 }
 
-void readRecievingFile(SOCKET ConnectSocket) {
-
-    char recvbuf[DEFAULT_BUFLEN];
-    int iResult;
-    int readCount = 3;
-    do {
+void readReceivingFile(SOCKET socket, const std::vector<char>& firstChunk, int firstChunkSize) {
+    std::filesystem::create_directories("received_files");
+    std::ofstream outFile("temp_receiving.bin", std::ios::binary | std::ios::trunc);
+    if (!outFile) {
+        std::cerr << "Failed to create output file.\n";
+        return;
+    }
+    
+    // Write the first chunk we already received
+    outFile.write(firstChunk.data(), firstChunkSize);
+    
+    char header[3];
+    while (true) {
+        if (recvAll(socket, header, 3) <= 0) break;
         
-        iResult = recv(ConnectSocket, recvbuf, readCount, 0);
+        int readCount = ((unsigned char)header[0] << 16) |
+                       ((unsigned char)header[1] << 8) |
+                       (unsigned char)header[2];
         
-        if (iResult > 0) {
-            std::cout << "Bytes received: " << iResult << std::endl;
+        std::vector<char> buffer(readCount);
+        if (recvAll(socket, buffer.data(), readCount) <= 0) break;
+        
+        // Check for EOF marker
+        const std::string eofPrefix = "EOF ";
+        if (readCount >= eofPrefix.size() &&
+            std::equal(eofPrefix.begin(), eofPrefix.end(), buffer.begin())) {
             
-            if(iResult == 3){
-                //if the received data is only 3 bytes, it is the read count
-                readCount = (static_cast<unsigned char>(recvbuf[0]) << 16) |
-                                (static_cast<unsigned char>(recvbuf[1]) << 8) |
-                                static_cast<unsigned char>(recvbuf[2]);
-                continue;
-            }
-
-            else {
-                //make a temporary file to store the incoming data
-                std::ofstream outFile("received_data.bin", std::ios::binary | std::ios::app);
-                if (!outFile) {
-                    std::cerr << "Error creating file to store received data." << std::endl;
-                    return;
-                }
-
-                //check if the received data is the EOF marker and file name
-                std::string recvStr(recvbuf);
-                if (recvStr.find("EOF ", 0) != std::string::npos) {
-                    std::string fileName = recvStr.substr(4);
-                    outFile.close();
-                    std::filesystem::rename("received_data.bin", fileName);
-                    std::cout << "Received end-of-file marker. Data saved to " << fileName << std::endl;
-                    break;
-                }
-
-                //cast the received data to uint64_t and write to file
-                for (int i = 0; i < iResult; ++i) {
-                    uint64_t dataPoint = static_cast<uint64_t>(recvbuf[i]);
-                    outFile.write(reinterpret_cast<char*>(&dataPoint), sizeof(uint64_t));
-                }
-            }
-            readCount = 3; //reset read count to 3 to read the next chunk size
+            std::string fileName(buffer.begin() + eofPrefix.size(), buffer.end());
+            std::filesystem::path destPath = std::filesystem::path("received_files") / fileName;
+            outFile.close();
+            std::filesystem::rename("temp_receiving.bin", destPath);
+            std::cout << "Received file saved as " << destPath.string() << "\n";
+            return; // Exit this function, outer loop will continue for next file
         }
-        else if (iResult == 0)
-            std::cout << "Connection closed" << std::endl;
-        else
-            std::cout << "recv failed with error: " << WSAGetLastError() << std::endl;
-
-    } while( iResult > 0 );
+        
+        // Regular file data
+        outFile.write(buffer.data(), readCount);
+    }
+    
+    outFile.close();
 }
 
 int main(int argc, char **argv) 
@@ -276,12 +274,30 @@ int main(int argc, char **argv)
             return 1;
         }
 
-        else if(sendbuf.find("read_data_file")!=std::string::npos){
-            //while not end of transmission marker
-            while (!fs.is_same_str(recvbuf, "EOT")) {
-                readRecievingFile(ConnectSocket);
+        else if(sendbuf.find("read_data_file") != std::string::npos){
+            while (true) {
+                char header[3];
+                int headerResult = recvAll(ConnectSocket, header, 3);
+                if (headerResult <= 0) break;
+                
+                int messageSize = ((unsigned char)header[0] << 16) |
+                                ((unsigned char)header[1] << 8) |
+                                (unsigned char)header[2];
+                
+                std::vector<char> buffer(messageSize);
+                int bodyResult = recvAll(ConnectSocket, buffer.data(), messageSize);
+                if (bodyResult <= 0) break;
+                
+                // Check for EOT
+                std::string message(buffer.begin(), buffer.end());
+                if (message == "EOT") {
+                    std::cout << "Finished receiving files." << std::endl;
+                    break;
+                }
+                
+                // This must be the first chunk of a file - pass it to the receiver
+                readReceivingFile(ConnectSocket, buffer, messageSize);
             }
-            std::cout << "Finished receiving files." << std::endl;
         }
 
         //ez a meres, a program megvarja a kezdes idopontjat es lefuttatja a merest

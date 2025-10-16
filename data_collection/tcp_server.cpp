@@ -53,45 +53,34 @@ void sendFile(SOCKET clientSocket, const std::string& filePath) {
         return;
     }
 
-    size_t chunkSize = DEFAULT_BUFLEN;
-    uint64_t* dataPoints = new uint64_t[chunkSize];
-    while (file.read(reinterpret_cast<char*>(dataPoints), chunkSize * sizeof(uint64_t)) || file.gcount()) {
-        size_t readCount = file.gcount() / sizeof(uint64_t);
-        char* buffer = new char[readCount];
-        for(size_t i = 0; i < readCount; ++i) {
-            buffer[i] = static_cast<char>(dataPoints[i] & 0xFF); 
-        }
-        //send read count bytes, make sure the client gets 3 bytes at a time
-        char readCountBuffer[3];
-        readCountBuffer[0] = static_cast<char>((readCount >> 16) & 0xFF);
-        readCountBuffer[1] = static_cast<char>((readCount >> 8) &   0xFF);
-        readCountBuffer[2] = static_cast<char>(readCount & 0xFF);
-        int errorCode = send(clientSocket, readCountBuffer, 3, 0);
-        if (errorCode == SOCKET_ERROR) {
-            std::cerr << "Failed to send read count for file: " << filePath << std::endl;
-            break;
-        }
+    const size_t chunkSize = DEFAULT_BUFLEN;
+    std::vector<char> buffer(chunkSize);
 
-        errorCode = send(clientSocket, buffer, readCount, 0);
-        if (errorCode == SOCKET_ERROR) {
-            std::cerr << "Failed to send file: " << filePath << std::endl;
-            break;
-        }
-        delete[] buffer;
+    while (file) {
+        file.read(buffer.data(), chunkSize);
+        size_t readCount = file.gcount();
+        if (readCount == 0) break;
+
+        // send 3-byte header
+        char header[3];
+        header[0] = (readCount >> 16) & 0xFF;
+        header[1] = (readCount >> 8) & 0xFF;
+        header[2] = readCount & 0xFF;
+        if (send(clientSocket, header, 3, 0) == SOCKET_ERROR) break;
+
+        // send data
+        if (send(clientSocket, buffer.data(), readCount, 0) == SOCKET_ERROR) break;
     }
-    delete[] dataPoints;
 
     //Send end-of-file marker and file name
     std::string eofMarker = "EOF " + std::filesystem::path(filePath).filename().string();
-
-    //send the length of the eof marker in 3 bytes followed by the eof marker itself
-    size_t eofMarkerSize = eofMarker.size();
-    int errorCode = send(clientSocket, reinterpret_cast<const char*>(&eofMarkerSize), 3, 0);
-
-    errorCode = send(clientSocket, eofMarker.c_str(), eofMarker.size(), 0);
-    if (errorCode == SOCKET_ERROR) {
-        std::cerr << "Failed to send EOF marker for file: " << filePath << std::endl;
-    }
+    size_t markerLen = eofMarker.size();
+    char header[3];
+    header[0] = (markerLen >> 16) & 0xFF;
+    header[1] = (markerLen >> 8) & 0xFF;
+    header[2] = markerLen & 0xFF;
+    send(clientSocket, header, 3, 0);
+    send(clientSocket, eofMarker.c_str(), markerLen, 0);
 
     file.close();
 }
@@ -241,10 +230,14 @@ int main(void)
                 }
 
                 //Send end-of-transmission marker
-                int errorCode = send(ClientSocket, "EOT", 3, 0);
-                if (errorCode == SOCKET_ERROR) {
-                    std::cerr << "Failed to send EOT marker" << std::endl;
-                }
+                std::string eotMarker = "EOT";
+                char eotHeader[3];
+                eotHeader[0] = (eotMarker.size() >> 16) & 0xFF;
+                eotHeader[1] = (eotMarker.size() >> 8) & 0xFF;
+                eotHeader[2] = eotMarker.size() & 0xFF;
+
+                send(ClientSocket, eotHeader, 3, 0);
+                send(ClientSocket, eotMarker.c_str(), eotMarker.size(), 0);
             }
 
             if (fs.is_same_str(recvbuf, "rotate")) {
