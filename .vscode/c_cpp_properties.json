@@ -6,10 +6,11 @@
                 "${workspaceFolder}/**",
                 "${workspaceFolder}",
                 "C:/Program Files/Thorlabs/Kinesis",
-                "${workspaceFolder}/fs740",
-                "${workspaceFolder}/Correlator",
-                "${workspaceFolder}/kinesis",
-                "C:/"
+                "${workspaceFolder}/cpp/fs740",
+                "${workspaceFolder}/cpp/Correlator",
+                "${workspaceFolder}/cpp/kinesis",
+                "C:/",
+                "C:/Users/Varga Patrik/Desktop/util/fftw-3.3.5-dll64"
             ],
             "defines": [
                 "_DEBUG",

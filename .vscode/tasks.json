@@ -8,8 +8,8 @@
                 "-fdiagnostics-color=always",
                 "-g",
                 "${file}",
-                "${workspaceFolder}\\kinesis\\KinesisUtil.cpp",
-                "${workspaceFolder}\\fs740\\fs_util.cpp",
+                "${workspaceFolder}\\cpp\\kinesis\\KinesisUtil.cpp",
+                "${workspaceFolder}\\cpp\\fs740\\fs_util.cpp",
                 "-o",
                 "${fileDirname}\\${fileBasenameNoExtension}.exe",
 
@@ -19,9 +19,9 @@
                 "-lThorlabs.MotionControl.IntegratedStepperMotors",
 
                 // Existing include dirs
-                "-I${workspaceFolder}\\kinesis",
-                "-I${workspaceFolder}\\fs740",
-                "-I${workspaceFolder}\\Correlator",
+                "-I${workspaceFolder}\\cpp\\kinesis",
+                "-I${workspaceFolder}\\cpp\\fs740",
+                "-I${workspaceFolder}\\cpp\\Correlator",
                 "-I\"C:\\Program Files\\Thorlabs\\Kinesis\"",
 
                 // >>> ADD THESE LINES FOR FFTW <<<
