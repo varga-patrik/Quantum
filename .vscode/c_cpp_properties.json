@@ -10,7 +10,8 @@
                 "${workspaceFolder}/cpp/Correlator",
                 "${workspaceFolder}/cpp/kinesis",
                 "C:/",
-                "C:/Users/Varga Patrik/Desktop/util/fftw-3.3.5-dll64"
+                "C:/Users/Varga Patrik/Desktop/util/fftw-3.3.5-dll64",
+                "${workspaceFolder}/cpp/orchestrator"
             ],
             "defines": [
                 "_DEBUG",

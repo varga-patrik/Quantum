@@ -6,25 +6,29 @@ std::string Orchestrator::runNextStep(){
     case 1:
         stepIndex++;
         return homeAll();
-    
+
     case 2:
+        stepIndex++;
+        return "setup";
+    
+    case 3:
         stepIndex++;
         return "start " + fs.start_time();
 
-    case 3:
+    case 4:
         stepIndex++;
         return "rotate wigner2 180";
 
-    case 4:
+    case 5:
         stepIndex++;
         return "read_data_file";
 
-    case 5:
+    case 6:
         stepIndex++;
         analyzeData();
         return "no command";
     
-    case6:
+    case 7:
         stepIndex = 1;
         return runQWPOptimizationStep();
         
@@ -38,14 +42,11 @@ std::string Orchestrator::homeAll(){
     lambda2_client.wait_for_command(2, 0);
     lambda2_client.deactivate();
 
-    lambda2_server.home();
-    lambda2_server.wait_for_command(2, 0);
-
-    lambda4_server.home();
-    lambda4_server.wait_for_command(2, 0);
-
     lambda4_client.home();
     lambda4_client.wait_for_command(2, 0);
+
+    lambda2_server = 0;
+    lambda4_server = 4;
 
     return "home";
 }
@@ -187,7 +188,7 @@ std::string Orchestrator::runQWPOptimizationStep() {
     // If there are remaining angles, return rotation command
     if (qwpTestIndex < qwpTestAngles.size()) {
         double angle = qwpTestAngles[qwpTestIndex++];
-        return "rotate wigner " + std::to_string(angle); // server QWP
+        return "rotate wigner4 " + std::to_string(angle); // server QWP
     } else {
         // All angles tested, update best visibility
         double visibility = computeVisibility();

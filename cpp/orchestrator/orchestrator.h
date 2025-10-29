@@ -16,9 +16,9 @@ private:
     // Instruments
     FSUtil fs;                       // GPS clock utility
     KinesisUtil lambda2_client;      // Client λ/2 rotator
-    KinesisUtil lambda2_server;      // Server λ/2 rotator
+    double lambda2_server;      // Server λ/2 rotator
     KinesisUtil lambda4_client;      // Client λ/4 rotator
-    KinesisUtil lambda4_server;      // Server λ/4 rotator
+    double lambda4_server;      // Server λ/4 rotator
     Correlator correlator;           // Correlation calculator
 
     // Internal state
@@ -27,7 +27,6 @@ private:
 
     // Parameters
     double degreeStep;               // e.g. 5° bins
-    double improvementThreshold;     // For convergence check
     std::vector<uint64_t> coincidences;
 
     // For QWP optimization
@@ -49,18 +48,16 @@ public:
     Orchestrator(
         const FSUtil& fsu,
         const KinesisUtil& l2c,
-        const KinesisUtil& l2s,
+        const double& l2s,
         const KinesisUtil& l4c,
-        const KinesisUtil& l4s,
+        const double& l4s,
         const Correlator& corr,
         const std::string& dataFolderPath,
-        double stepDeg = 5.0,
-        double threshold = 0.01
+        double stepDeg = 5.0
     );
 
     // Main control
     std::string runNextStep();       // Called by TCP client loop
-    bool hasConverged() const;       // Check if optimization done
 
 private:
     // Step actions
@@ -77,4 +74,5 @@ private:
         double toleranceNs);
     double computeVisibility() const;
     void prepareQWPScan(bool fine);
+    std::string runQWPOptimizationStep();
 };

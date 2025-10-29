@@ -186,12 +186,6 @@ int main(void)
     device_wigner_2.home();
     device_wigner_4.home();
 
-    double rotation_stages[19] = { 0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90 };
-    int counter_wigner_4 = 0;
-    int counter_wigner_2 = 0;
-
-    std::vector<uint64_t> results;
-
     do {
         std::ostringstream path;
         iResult = recv(ClientSocket, recvbuf, recvbuflen, 0);
@@ -213,16 +207,6 @@ int main(void)
                 fs.run(path.str());
             }*/
 
-            if(fs.is_same_str(recvbuf, "activate_wigner")){
-                device_wigner_2.activate();
-                device_wigner_4.activate();
-            }
-
-            if(fs.is_same_str(recvbuf, "deactivate_wigner")){
-                device_wigner_2.deactivate();
-                device_wigner_4.deactivate();
-            }
-
             if(fs.is_same_str(recvbuf, "read_data_file")){
                 std::vector<std::string> files = uploadFiles("./data", "bme");
                 for (const auto& file : files) {
@@ -240,36 +224,17 @@ int main(void)
                 send(ClientSocket, eotMarker.c_str(), eotMarker.size(), 0);
             }
 
-            if (fs.is_same_str(recvbuf, "rotate")) {
-                if(device_wigner_2.isActive() && device_wigner_4.isActive()){
-                    
-                    if (counter_wigner_2 == 18) {
+            if (fs.is_in(recvbuf, "rotate")) {
+                std::istringstream iss(recvbuf);
+                std::string command, deviceName;
+                double angle = 0.0;
+                iss >> command >> deviceName >> angle;
 
-                        if (!device_wigner_4.moveToPosition(rotation_stages[counter_wigner_4])) {
-                            std::cout << "ERROR with wigner 4" << std::endl;
-                        }
-
-                        if (!device_wigner_2.moveToPosition(rotation_stages[counter_wigner_2])) {
-                            std::cout << "ERROR with wigner 2" << std::endl;
-                        }
-                        counter_wigner_2 = 0;
-                        counter_wigner_4++;
-                    }
-                    else {
-
-                        if (!device_wigner_4.moveToPosition(rotation_stages[counter_wigner_4])) {
-                            std::cout << "ERROR with wigner 4" << std::endl;
-                        }
-
-                        if (!device_wigner_2.moveToPosition(rotation_stages[counter_wigner_2])) {
-                            std::cout << "ERROR with wigner 2" << std::endl;
-                        }
-
-                        counter_wigner_2++;
-                    }
-
-                    std::cout<< "Current position: "<< std::endl << "Wigner4: " << rotation_stages[counter_wigner_4] 
-                    << std::endl << "Wigner2: " << rotation_stages[counter_wigner_2] << std::endl; 
+                if (deviceName == "wigner2") {
+                    device_wigner_2.moveToPosition(angle);
+                } 
+                else if (deviceName == "wigner4") {
+                    device_wigner_4.moveToPosition(angle);
                 }
             }
 

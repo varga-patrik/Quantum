@@ -16,6 +16,7 @@
 #include "KinesisUtil.h"
 #include "Correlator.h"
 #include "direct.h"
+#include "orchestrator.h"
 
 #pragma comment (lib, "Ws2_32.lib")
 #pragma comment (lib, "Mswsock.lib")
@@ -187,19 +188,13 @@ int main(int argc, char **argv)
 
     device_bme_2.home();
     device_bme_4.home();
-
-    //Correlator correlator(100000, (1ULL << 16));
-
-    double rotation_stages[19] = { 0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90 };
-    int counter_bme_4 = 0;
-    int counter_bme_2 = 0;
-
-    std::vector<uint64_t> results;
+    Correlator correlator(100000, (1ULL << 16));
+    Orchestrator orchstrator(fs, device_bme_2, 0.0, device_bme_4, 0.0, correlator, 
+                            "C:\\Users\\Varga Patrik\\Desktop\\Quantum\\data", 5.0);
 
     while(!fs.is_same_str(sendbuf.c_str(), "exit")){
         std::ostringstream path;
-        std::cout << "Type here: ";
-        std::cin >> sendbuf; 
+        sendbuf = orchstrator.runNextStep();
 
         //setup parancs elokesziti a muszereket a meresre
         if(fs.is_same_str(sendbuf.c_str(), "setup")){
@@ -210,59 +205,9 @@ int main(int argc, char **argv)
         }
 
         //meg a start futtatasa elott a kliens kituzi a meres idejet es igy kuldi el ezt a masik oldalnak
-        if(fs.is_same_str(sendbuf.c_str(), "start")){
+        if(fs.is_in(sendbuf.c_str(), "start")){
             sendbuf += " ";
             sendbuf += fs.start_time();
-        }
-
-        if(fs.is_same_str(sendbuf.c_str(), "activate_bme")){
-            device_bme_2.activate();
-            device_bme_4.activate();
-        }
-
-        if(fs.is_same_str(sendbuf.c_str(), "deactivate_bme")){
-            device_bme_2.deactivate();
-            device_bme_4.deactivate();
-        }
-
-        if (fs.is_same_str(sendbuf.c_str(), "rotate")) {
-            if(device_bme_2.isActive() && device_bme_4.isActive()){
-                if (counter_bme_2 == 18) {
-
-                    std::vector<std::string> dataset1 = uploadFiles("./data", "bme");
-                    std::vector<std::string> dataset2 = uploadFiles("./data", "wigner");
-                    //results.push_back(correlator.runCorrelation(true, dataset1, dataset2, 500));
-
-                    if (!device_bme_4.moveToPosition(rotation_stages[counter_bme_4])) {
-                        std::cout << "ERROR with bme 4" << std::endl;
-                    }
-
-                    if (!device_bme_2.moveToPosition(rotation_stages[counter_bme_2])) {
-                        std::cout << "ERROR with bme 2" << std::endl;
-                    }
-                    counter_bme_2 = 0;
-                    counter_bme_4++;
-                }
-                else {
-
-                    std::vector<std::string> dataset1 = uploadFiles("./data", "bme");
-                    std::vector<std::string> dataset2 = uploadFiles("./data", "wigner");
-                    //results.push_back(correlator.runCorrelation(true, dataset1, dataset2, 500));
-
-                    if (!device_bme_4.moveToPosition(rotation_stages[counter_bme_4])) {
-                        std::cout << "ERROR with bme 4" << std::endl;
-                    }
-
-                    if (!device_bme_2.moveToPosition(rotation_stages[counter_bme_2])) {
-                        std::cout << "ERROR with bme 2" << std::endl;
-                    }
-
-                    counter_bme_2++;
-                }
-
-                std::cout<< "Current position: "<< std::endl << "BME4: " << rotation_stages[counter_bme_4] 
-                    << std::endl << "BME2: " << rotation_stages[counter_bme_2] << std::endl; 
-            }
         }
 
         iResult = send( ConnectSocket, sendbuf.c_str(), DEFAULT_BUFLEN, 0 );
@@ -308,29 +253,6 @@ int main(int argc, char **argv)
             fs.run(path.str());
         }
     }
-
-    uint64_t maxValue = 0;
-    size_t maxIndex = 0;
-
-    for (size_t i = 0; i < results.size(); i++) {
-        if (results[i] > maxValue) {
-            maxValue = results[i];
-            maxIndex = i;
-        }
-    }
-
-    // reconstruct which angles correspond to this measurement
-    int totalStages = 19;
-    int hwpIndex = static_cast<int>(maxIndex / totalStages);
-    int qwpIndex = static_cast<int>(maxIndex % totalStages);
-
-    double bestHwpAngle = rotation_stages[hwpIndex];
-    double bestQwpAngle = rotation_stages[qwpIndex];
-
-    std::cout << "\n=== BEST RESULT ===" << std::endl;
-    std::cout << "Max correlation value: " << maxValue << std::endl;
-    std::cout << "Bme 4 angle: " << bestHwpAngle << " degrees" << std::endl;
-    std::cout << "Bme 2 angle: " << bestQwpAngle << " degrees" << std::endl;
 
     // shutdown the connection since no more data will be sent
     iResult = shutdown(ConnectSocket, SD_SEND);
