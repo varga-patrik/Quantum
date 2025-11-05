@@ -180,76 +180,88 @@ int main(void)
     //nem tudom pontosan mekkora lenne a kar, valoszinuleg csak egy error az egyik oldalon, de ezek a muszerek eleg dragak, nem kockaztatnam
     //--------------------------------------------------------
 
-    KinesisUtil device_wigner_4("12345897");
-    KinesisUtil device_wigner_2("12345897");
+    if(TLI_BuildDeviceList() == 0){
 
-    device_wigner_2.home();
-    device_wigner_4.home();
+        KinesisUtil device_wigner_4("12345897");
+        KinesisUtil device_wigner_2("12345897");
 
-    do {
-        std::ostringstream path;
-        iResult = recv(ClientSocket, recvbuf, recvbuflen, 0);
-        if (iResult > 0) {
+        device_wigner_2.load();
+        device_wigner_4.load();
 
-            //setup parancs elokesziti a muszereket a meresre
-            /*if(fs.is_same_str(recvbuf, "setup")){
-                fs.measure_setup();
-                path.clear();
-                path << "\"" << pathbuffer << "\\timetagger_setup.py\"";
-                fs.run(path.str());
-            }
+        device_wigner_2.startPolling(200);
+        device_wigner_4.startPolling(200);
 
-            //ez a meres, a program megvarja a kezdes idopontjat es lefuttatja a merest
-            else if(fs.is_in(recvbuf, "start")){
-                fs.wait_until(recvbuf + 6);
-                path.clear();
-                path << "\"" << pathbuffer << "\\timestamps_acquisition.py\"";
-                fs.run(path.str());
-            }*/
+        device_wigner_2.home();
+        device_wigner_4.home();
 
-            if(fs.is_same_str(recvbuf, "read_data_file")){
-                std::vector<std::string> files = uploadFiles("./data", "bme");
-                for (const auto& file : files) {
-                    sendFile(ClientSocket, file);
+        do {
+            std::ostringstream path;
+            iResult = recv(ClientSocket, recvbuf, recvbuflen, 0);
+            if (iResult > 0) {
+
+                //setup parancs elokesziti a muszereket a meresre
+                /*if(fs.is_same_str(recvbuf, "setup")){
+                    fs.measure_setup();
+                    path.clear();
+                    path << "\"" << pathbuffer << "\\timetagger_setup.py\"";
+                    fs.run(path.str());
                 }
 
-                //Send end-of-transmission marker
-                std::string eotMarker = "EOT";
-                char eotHeader[3];
-                eotHeader[0] = (eotMarker.size() >> 16) & 0xFF;
-                eotHeader[1] = (eotMarker.size() >> 8) & 0xFF;
-                eotHeader[2] = eotMarker.size() & 0xFF;
+                //ez a meres, a program megvarja a kezdes idopontjat es lefuttatja a merest
+                else if(fs.is_in(recvbuf, "start")){
+                    fs.wait_until(recvbuf + 6);
+                    path.clear();
+                    path << "\"" << pathbuffer << "\\timestamps_acquisition.py\"";
+                    fs.run(path.str());
+                }*/
 
-                send(ClientSocket, eotHeader, 3, 0);
-                send(ClientSocket, eotMarker.c_str(), eotMarker.size(), 0);
-            }
+                if(fs.is_same_str(recvbuf, "read_data_file")){
+                    std::vector<std::string> files = uploadFiles("./data", "bme");
+                    for (const auto& file : files) {
+                        sendFile(ClientSocket, file);
+                    }
 
-            if (fs.is_in(recvbuf, "rotate")) {
-                std::istringstream iss(recvbuf);
-                std::string command, deviceName;
-                double angle = 0.0;
-                iss >> command >> deviceName >> angle;
+                    //Send end-of-transmission marker
+                    std::string eotMarker = "EOT";
+                    char eotHeader[3];
+                    eotHeader[0] = (eotMarker.size() >> 16) & 0xFF;
+                    eotHeader[1] = (eotMarker.size() >> 8) & 0xFF;
+                    eotHeader[2] = eotMarker.size() & 0xFF;
 
-                if (deviceName == "wigner2") {
-                    device_wigner_2.moveToPosition(angle);
-                } 
-                else if (deviceName == "wigner4") {
-                    device_wigner_4.moveToPosition(angle);
+                    send(ClientSocket, eotHeader, 3, 0);
+                    send(ClientSocket, eotMarker.c_str(), eotMarker.size(), 0);
                 }
+
+                if (fs.is_in(recvbuf, "rotate")) {
+                    std::istringstream iss(recvbuf);
+                    std::string command, deviceName;
+                    double angle = 0.0;
+                    iss >> command >> deviceName >> angle;
+
+                    if (deviceName == "wigner2") {
+                        device_wigner_2.moveToPosition(angle);
+                    } 
+                    else if (deviceName == "wigner4") {
+                        device_wigner_4.moveToPosition(angle);
+                    }
+                }
+
+                std::cout << std::endl << "Recieved: " << recvbuf << std::endl;
+            }
+            else if (iResult == 0)
+                printf("Connection closing...\n");
+            else  {
+                printf("recv failed with error: %d\n", WSAGetLastError());
+                closesocket(ClientSocket);
+                WSACleanup();
+                return 1;
             }
 
-            std::cout << std::endl << "Recieved: " << recvbuf << std::endl;
-        }
-        else if (iResult == 0)
-            printf("Connection closing...\n");
-        else  {
-            printf("recv failed with error: %d\n", WSAGetLastError());
-            closesocket(ClientSocket);
-            WSACleanup();
-            return 1;
-        }
+        } while (iResult > 0);
 
-    } while (iResult > 0);
+        device_wigner_2.stopPolling();
+        device_wigner_4.stopPolling();
+    }
 
     // shutdown the connection since we're done
     iResult = shutdown(ClientSocket, SD_SEND);

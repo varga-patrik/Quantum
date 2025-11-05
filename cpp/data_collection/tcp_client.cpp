@@ -183,75 +183,86 @@ int main(int argc, char **argv)
     //nem tudom pontosan mekkora lenne a kar, valoszinuleg csak egy error az egyik oldalon, de ezek a muszerek eleg dragak, nem kockaztatnam
     //--------------------------------------------------------
 
-    KinesisUtil device_bme_4("12345679");
-    KinesisUtil device_bme_2("12345679");
+    if(TLI_BuildDeviceList() == 0){
+        KinesisUtil device_bme_4("12345679");
+        KinesisUtil device_bme_2("12345679");
 
-    device_bme_2.home();
-    device_bme_4.home();
-    Correlator correlator(100000, (1ULL << 16));
-    Orchestrator orchstrator(fs, device_bme_2, 0.0, device_bme_4, 0.0, correlator, 
-                            "C:\\Users\\Varga Patrik\\Desktop\\Quantum\\data", 5.0);
+        device_bme_2.load();
+        device_bme_4.load();
 
-    while(!fs.is_same_str(sendbuf.c_str(), "exit")){
-        std::ostringstream path;
-        sendbuf = orchstrator.runNextStep();
+        device_bme_2.startPolling(200);
+        device_bme_4.startPolling(200);
 
-        //setup parancs elokesziti a muszereket a meresre
-        if(fs.is_same_str(sendbuf.c_str(), "setup")){
-            fs.measure_setup();
-            path.clear();
-            path << "\"" << pathbuffer << "\\timetagger_setup.py\"";
-            fs.run(path.str());
-        }
+        device_bme_2.home();
+        device_bme_4.home();
+        Correlator correlator(100000, (1ULL << 16));
+        Orchestrator orchstrator(fs, device_bme_2, 0.0, device_bme_4, 0.0, correlator, 
+                                "C:\\Users\\Varga Patrik\\Desktop\\Quantum\\data", 5.0);
 
-        //meg a start futtatasa elott a kliens kituzi a meres idejet es igy kuldi el ezt a masik oldalnak
-        if(fs.is_in(sendbuf.c_str(), "start")){
-            sendbuf += " ";
-            sendbuf += fs.start_time();
-        }
+        while(!fs.is_same_str(sendbuf.c_str(), "exit")){
+            std::ostringstream path;
+            sendbuf = orchstrator.runNextStep();
 
-        iResult = send( ConnectSocket, sendbuf.c_str(), DEFAULT_BUFLEN, 0 );
+            //setup parancs elokesziti a muszereket a meresre
+            if(fs.is_same_str(sendbuf.c_str(), "setup")){
+                fs.measure_setup();
+                path.clear();
+                path << "\"" << pathbuffer << "\\timetagger_setup.py\"";
+                fs.run(path.str());
+            }
 
-        if (iResult == SOCKET_ERROR) {
-            printf("send failed with error: %d\n", WSAGetLastError());
-            closesocket(ConnectSocket);
-            WSACleanup();
-            return 1;
-        }
+            //meg a start futtatasa elott a kliens kituzi a meres idejet es igy kuldi el ezt a masik oldalnak
+            if(fs.is_in(sendbuf.c_str(), "start")){
+                sendbuf += " ";
+                sendbuf += fs.start_time();
+            }
 
-        else if(sendbuf.find("read_data_file") != std::string::npos){
-            while (true) {
-                char header[3];
-                int headerResult = recvAll(ConnectSocket, header, 3);
-                if (headerResult <= 0) break;
-                
-                int messageSize = ((unsigned char)header[0] << 16) |
-                                ((unsigned char)header[1] << 8) |
-                                (unsigned char)header[2];
-                
-                std::vector<char> buffer(messageSize);
-                int bodyResult = recvAll(ConnectSocket, buffer.data(), messageSize);
-                if (bodyResult <= 0) break;
-                
-                // Check for EOT
-                std::string message(buffer.begin(), buffer.end());
-                if (message == "EOT") {
-                    std::cout << "Finished receiving files." << std::endl;
-                    break;
+            iResult = send( ConnectSocket, sendbuf.c_str(), DEFAULT_BUFLEN, 0 );
+
+            if (iResult == SOCKET_ERROR) {
+                printf("send failed with error: %d\n", WSAGetLastError());
+                closesocket(ConnectSocket);
+                WSACleanup();
+                return 1;
+            }
+
+            else if(sendbuf.find("read_data_file") != std::string::npos){
+                while (true) {
+                    char header[3];
+                    int headerResult = recvAll(ConnectSocket, header, 3);
+                    if (headerResult <= 0) break;
+                    
+                    int messageSize = ((unsigned char)header[0] << 16) |
+                                    ((unsigned char)header[1] << 8) |
+                                    (unsigned char)header[2];
+                    
+                    std::vector<char> buffer(messageSize);
+                    int bodyResult = recvAll(ConnectSocket, buffer.data(), messageSize);
+                    if (bodyResult <= 0) break;
+                    
+                    // Check for EOT
+                    std::string message(buffer.begin(), buffer.end());
+                    if (message == "EOT") {
+                        std::cout << "Finished receiving files." << std::endl;
+                        break;
+                    }
+                    
+                    // This must be the first chunk of a file - pass it to the receiver
+                    readReceivingFile(ConnectSocket, buffer, messageSize);
                 }
-                
-                // This must be the first chunk of a file - pass it to the receiver
-                readReceivingFile(ConnectSocket, buffer, messageSize);
+            }
+
+            //ez a meres, a program megvarja a kezdes idopontjat es lefuttatja a merest
+            else if(sendbuf.find("start")!=std::string::npos){
+                fs.wait_until(sendbuf.substr(6).c_str());
+                path.clear();
+                path << "\"" << pathbuffer << "\\timestamps_acquisition.py\"";
+                fs.run(path.str());
             }
         }
 
-        //ez a meres, a program megvarja a kezdes idopontjat es lefuttatja a merest
-        else if(sendbuf.find("start")!=std::string::npos){
-            fs.wait_until(sendbuf.substr(6).c_str());
-            path.clear();
-            path << "\"" << pathbuffer << "\\timestamps_acquisition.py\"";
-            fs.run(path.str());
-        }
+        device_bme_2.stopPolling();
+        device_bme_4.stopPolling();
     }
 
     // shutdown the connection since no more data will be sent
