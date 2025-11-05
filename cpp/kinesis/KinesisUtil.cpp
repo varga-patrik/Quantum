@@ -9,7 +9,7 @@ bool KinesisUtil::connect() {
 }
 
 //varakozas a megadott parancs lefutasara
-//nagyon konnyu egy vegtelen ciklust csinalni, ha rossz id-t adunk meg
+//nagyon konnyu egy vegtelen ciklust csinalni, ha rossz id-t adunk meg, meg neha amugy sem mukodik
 //a leiras szerint egy generic motors eszkozokre (mint amilyen az az eszkoz is amire eredetileg keszult a kod) az alabbi id-k vannak:
 //homed: 0, moved: 1, stopped: 2, limitUpdated: 3
 //message type mindig kettő generic motor eseten
@@ -32,7 +32,12 @@ void KinesisUtil::wait_for_command(WORD type, WORD id) { //id = 0 ha home, mozga
 bool KinesisUtil::load() {
     if (connected && active) {
         std::cout << "Loading " << serialNum << std::endl;
-        return ISC_LoadSettings(serialNum.c_str());
+        bool success = ISC_LoadSettings(serialNum.c_str());
+        int acceleration, maxspeed;
+        ISC_GetVelParams(serialNum.c_str(), &acceleration, &maxspeed);
+        acc = getReal(acceleration, 2);
+        speed = getReal(maxspeed, 1);
+        return success;
     }
     std::cout << "ERROR, not connected or unactive device" << std::endl;
     return false;
@@ -85,6 +90,7 @@ bool KinesisUtil::home() {
 }
 
 //valos ertek atvaltasa eszkoz ertekre
+//unit type távolság esetén 0, sebesség 1 és gyorsulás 2
 int KinesisUtil::getDevice(double real, int unitType) {
     if (connected && active) {
         short errorCode;
@@ -97,6 +103,7 @@ int KinesisUtil::getDevice(double real, int unitType) {
 }
 
 //eszkoz ertek atvaltasa valos ertekre
+//unit type távolság esetén 0, sebesség 1 és gyorsulás 2
 double KinesisUtil::getReal(int device, int unitType) {
     if (connected && active) {
         short errorCode;
@@ -133,13 +140,50 @@ bool KinesisUtil::jog() {
     return false;
 }
 
+bool KinesisUtil::setJogMode(MOT_JogModes mode){
+    if(connected && active){
+        if(mode == MOT_JogModes::MOT_Continuous){
+            std::cout << "Setting jog mode to continuous for " << serialNum << std::endl;
+        }
+
+        if(mode == MOT_JogModes::MOT_SingleStep){
+            std::cout << "Setting jog mode to single step for " << serialNum << std::endl;
+        }
+
+        short errorCode;
+        errorCode = ISC_SetJogMode(serialNum.c_str(), mode, MOT_StopModes::MOT_Profiled);
+        return errorCode == 0;
+    }
+    std::cout << "ERROR, not connected or unactive device" << std::endl;
+    return false;
+}
+
+bool KinesisUtil::stopMoving(MOT_StopModes mode){
+    if(connected && active){
+        if(mode == MOT_StopModes::MOT_Immediate){
+            std::cout << "Stopping " << serialNum << " with immediate stop mode" << std::endl;
+            short errorCode;
+            errorCode = ISC_StopImmediate(serialNum.c_str());
+            return errorCode == 0;
+        }
+
+        if(mode == MOT_StopModes::MOT_Profiled){
+            std::cout << "Stopping " << serialNum << " with profiled stop mode" << std::endl;
+            short errorCode;
+            errorCode = ISC_StopProfiled(serialNum.c_str());
+            return errorCode == 0;
+        }
+    }
+    std::cout << "ERROR, not connected or unactive device" << std::endl;
+    return false;
+}
+
 //mozgas adott pozicioba
 bool KinesisUtil::moveToPosition(double degree) {
     if (connected && active) {
         std::cout << "Moving " << serialNum << std::endl;
         short errorCode;
         errorCode = ISC_MoveToPosition(serialNum.c_str(), getDevice(degree, 0));
-        wait_for_command(2, 1);
         return errorCode == 0;
     }
     std::cout << "ERROR, not connected or unactive device" << std::endl;
@@ -164,6 +208,20 @@ bool KinesisUtil::moveAbs() {
         short errorCode;
         errorCode = ISC_MoveAbsolute(serialNum.c_str());
         wait_for_command(2, 1);
+        return errorCode == 0;
+    }
+    std::cout << "ERROR, not connected or unactive device" << std::endl;
+    return false;
+}
+
+//egyelore nem jottem ra hogy milyen mertekegysegnek kell ertelmezni a parametereket
+bool KinesisUtil::setVelParams(double acceleration, double maxspeed){
+    if (connected && active){
+        std::cout << "Setting acceleration to " << acceleration << " and speed to " << maxspeed << std::endl;
+        acc = acceleration;
+        speed = maxspeed;
+        short errorCode; 
+        errorCode = ISC_SetVelParams(serialNum.c_str(), getDevice(acc, 2), getDevice(speed, 1));
         return errorCode == 0;
     }
     std::cout << "ERROR, not connected or unactive device" << std::endl;

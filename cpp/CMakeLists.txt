@@ -12,6 +12,7 @@ include_directories(
     ${CMAKE_SOURCE_DIR}/cpp/data_collection
     ${CMAKE_SOURCE_DIR}/cpp/fs740
     ${CMAKE_SOURCE_DIR}/cpp/kinesis
+    ${CMAKE_SOURCE_DIR}/cpp/orchestrator
     "C:/Program Files/Thorlabs/Kinesis"
     "C:/Users/Varga Patrik/Desktop/util/fftw-3.3.5-dll64"
 )

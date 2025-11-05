@@ -3,7 +3,7 @@
         {
             "type": "cppbuild",
             "label": "C/C++: g++.exe build active file",
-            "command": "C:\\mingw64\\bin\\g++.exe",
+            "command": "C:\\msys64\\ucrt64\\bin\\g++.exe",
             "args": [
                 "-fdiagnostics-color=always",
                 "-g",
@@ -25,9 +25,9 @@
                 "-I\"C:\\Program Files\\Thorlabs\\Kinesis\"",
 
                 // >>> ADD THESE LINES FOR FFTW <<<
-                "-I\"C:\\Users\\Varga Patrik\\Desktop\\util\\fftw-3.3.5-dll64\"",
-                "-L\"C:\\Users\\Varga Patrik\\Desktop\\util\\fftw-3.3.5-dll64\"",
-                "-lfftw3"
+                //"-I\"C:\\Users\\Varga Patrik\\Desktop\\util\\fftw-3.3.5-dll64\"",
+                //"-L\"C:\\Users\\Varga Patrik\\Desktop\\util\\fftw-3.3.5-dll64\"",
+                //"-lfftw3"
                 // <<< END ADDITION >>>
             ],
             "options": {

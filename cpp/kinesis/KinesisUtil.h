@@ -14,6 +14,7 @@ private:
 	WORD messageType;
 	WORD messageId;
 	DWORD messageData;
+	double acc, speed;
 
 public:
 	KinesisUtil(const char* serial) {
@@ -25,10 +26,12 @@ public:
 		else {
 			std::cout << "Not connected" << std::endl;
 		}
-		active = false;
+		active = true;
 		messageType = 0;
 		messageId = 0;
 		messageData = 0;
+		acc = 0;
+		speed = 0;
 	}
 
 	~KinesisUtil() {
@@ -46,10 +49,22 @@ public:
 		return active;
 	}
 
+	double getAcc(){
+		return acc;
+	}
+
+	double getSpeed(){
+		return speed;
+	}
+
 	//minden fuggveny meghivja a nevehez tartozo fuggvenyet az eszkoznek, illetve ellenorzi a kapcsolatot es az aktiv allapotot
 	//az 'active' valtozo nem kapcsolja ki az eszkozt, illetve a kapcsolatot sem szunteti meg, csak a fuggvenyeket teszi elerhetetlenne
-	//ez azert kell hogy konnyem lehessen kezelni ha tobb eszkoz kozul egynek mar megtalaltuk az optimalis poziciojat
+	//ez azert kell hogy konnyen lehessen kezelni ha tobb eszkoz kozul egynek mar megtalaltuk az optimalis poziciojat
 	//ezen kivul minden fuggveny visszater vagy az eredeti fuggveny hibakodjaval, vagy egy bool valtozoval ami jelzi a sikeres vegrehajtast
+
+	std::string getSerial(){
+		return serialNum;
+	}
  	void wait_for_command(WORD type, WORD id);
 	bool load();
 	bool startPolling(int milisec);
@@ -60,6 +75,8 @@ public:
 	double getReal(int device, int unitType);
 	bool setJogStep(double step);
 	bool jog();
+	bool setJogMode(MOT_JogModes mode);
+	bool stopMoving(MOT_StopModes mode);
 	bool moveToPosition(double degree);
 	bool setAbsParam(double degree);
 	bool moveAbs();
@@ -67,4 +84,5 @@ public:
 	bool moveRel();
 	double getPos();
 	bool canMove();
+	bool setVelParams(double acceleration, double maxspeed);
 };
