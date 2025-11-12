@@ -11,6 +11,22 @@
 #include "KinesisUtil.h"
 #include "Correlator.h"
 
+enum class OrchestratorStep {
+    HomeAll,
+    Setup,
+    MeasureFullPhase,
+    ReadData,
+    AnalyzeData,
+    FindMinVisibility,
+    AdjustQWP,
+    FineScan,
+    CheckImprovement,
+    Exit
+};
+
+const std::string FullPhaseCollectionTime = "23";
+const std::string FinePhaseCollectionTime = "5";
+
 class Orchestrator {
 private:
     // Instruments
@@ -22,12 +38,13 @@ private:
     Correlator correlator;           // Correlation calculator
 
     // Internal state
-    int stepIndex;                   // Keeps track of current step
+    OrchestratorStep currentStep;                   // Keeps track of current step
     std::string dataFolder;          // Folder containing timestamp data
 
     // Parameters
     double degreeStep;               // e.g. 5° bins
     std::vector<uint64_t> coincidences;
+    double improvementThreshold;
 
     // For QWP optimization
     int qwpOptSideIndex = 0;           // 0 = client, 1 = server
@@ -75,4 +92,6 @@ private:
     double computeVisibility() const;
     void prepareQWPScan(bool fine);
     std::string runQWPOptimizationStep();
+    std::string rotateToMinVis();
+    bool hasConverged();
 };

@@ -199,7 +199,16 @@ int main(int argc, char **argv)
         Orchestrator orchstrator(fs, device_bme_2, 0.0, device_bme_4, 0.0, correlator, 
                                 "C:\\Users\\Varga Patrik\\Desktop\\Quantum\\data", 5.0);
 
+        bool long_wait = false;
+
         while(!fs.is_same_str(sendbuf.c_str(), "exit")){
+
+            if(long_wait){
+                std::this_thread::sleep_for(std::chrono::seconds(30));
+            }
+            else{
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            }
             std::ostringstream path;
             sendbuf = orchstrator.runNextStep();
 
@@ -209,12 +218,6 @@ int main(int argc, char **argv)
                 path.clear();
                 path << "\"" << pathbuffer << "\\timetagger_setup.py\"";
                 fs.run(path.str());
-            }
-
-            //meg a start futtatasa elott a kliens kituzi a meres idejet es igy kuldi el ezt a masik oldalnak
-            if(fs.is_in(sendbuf.c_str(), "start")){
-                sendbuf += " ";
-                sendbuf += fs.start_time();
             }
 
             iResult = send( ConnectSocket, sendbuf.c_str(), DEFAULT_BUFLEN, 0 );
@@ -253,13 +256,31 @@ int main(int argc, char **argv)
             }
 
             //ez a meres, a program megvarja a kezdes idopontjat es lefuttatja a merest
-            else if(sendbuf.find("start")!=std::string::npos){
-                fs.wait_until(sendbuf.substr(6).c_str());
-                path.clear();
-                path << "\"" << pathbuffer << "\\timestamps_acquisition.py\"";
-                fs.run(path.str());
+            else if (sendbuf.find("rotate") != std::string::npos) {
+                std::istringstream iss(sendbuf);
+                std::string command, deviceName, mode, startTimeStr;
+                double durationSec = -1.0; // sentinel for "no measurement"
+
+                // Parse the command
+                iss >> command >> deviceName >> mode >> durationSec >> startTimeStr;
+
+                // Rotate the device
+                if (deviceName == "wigner2") {
+                    // Only start acquisition if duration > 0 and startTimeStr is not empty
+                    if (durationSec > 0 && !startTimeStr.empty()) {
+                        // Wait until the specified GPS start time
+                        fs.wait_until(startTimeStr.c_str());
+
+                        // Build Python command
+                        std::ostringstream path;
+                        path << "\"" << pathbuffer << "\\timestamps_acquisition.py\""
+                            << " --duration " << std::fixed << std::setprecision(2) << durationSec;
+
+                        // Run acquisition
+                        fs.run(path.str());
+                    }
+                } 
             }
-        }
 
         device_bme_2.stopPolling();
         device_bme_4.stopPolling();

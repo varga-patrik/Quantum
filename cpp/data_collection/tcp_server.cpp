@@ -45,6 +45,61 @@ std::vector<std::string> uploadFiles(const std::string& folder, const std::strin
     return files;
 }
 
+void clampData(const std::string& folder, int64_t time_elapsed) {
+    if (!std::filesystem::exists(folder)) return;
+
+    const int64_t PICO_PER_SECOND = 1000000000000LL; // 10^12
+    const size_t CHUNK_SIZE = 1024; // number of timestamps per chunk
+
+    for (const auto& entry : std::filesystem::directory_iterator(folder)) {
+        if (!std::filesystem::is_regular_file(entry)) continue;
+
+        std::string filepath = entry.path().string();
+        std::string tempFilepath = filepath + ".tmp";
+
+        std::ifstream inFile(filepath, std::ios::binary);
+        if (!inFile.is_open()) continue;
+
+        std::ofstream outFile(tempFilepath, std::ios::binary | std::ios::trunc);
+        if (!outFile.is_open()) {
+            inFile.close();
+            continue;
+        }
+
+        std::vector<std::pair<uint64_t, uint64_t>> buffer;
+        buffer.reserve(CHUNK_SIZE);
+
+        while (true) {
+            buffer.clear();
+            for (size_t i = 0; i < CHUNK_SIZE; ++i) {
+                uint64_t picosec = 0, refSec = 0;
+                inFile.read(reinterpret_cast<char*>(&picosec), sizeof(uint64_t));
+                inFile.read(reinterpret_cast<char*>(&refSec), sizeof(uint64_t));
+                if (inFile.gcount() < sizeof(uint64_t) * 2) break;
+
+                int64_t totalPicosec = static_cast<int64_t>(picosec) + static_cast<int64_t>(refSec) * PICO_PER_SECOND;
+
+                if (totalPicosec <= time_elapsed) {
+                    buffer.emplace_back(picosec, refSec);
+                }
+            }
+
+            // Write valid timestamps from this chunk
+            for (const auto& ts : buffer) {
+                outFile.write(reinterpret_cast<const char*>(&ts.first), sizeof(uint64_t));
+                outFile.write(reinterpret_cast<const char*>(&ts.second), sizeof(uint64_t));
+            }
+
+            if (inFile.eof()) break;
+        }
+
+        inFile.close();
+        outFile.close();
+
+        std::filesystem::rename(tempFilepath, filepath); // replace original with clamped file
+    }
+}
+
 void sendFile(SOCKET clientSocket, const std::string& filePath) {
     // Open the file
     std::ifstream file(filePath, std::ios::binary);
@@ -200,20 +255,12 @@ int main(void)
             if (iResult > 0) {
 
                 //setup parancs elokesziti a muszereket a meresre
-                /*if(fs.is_same_str(recvbuf, "setup")){
+                if(fs.is_same_str(recvbuf, "setup")){
                     fs.measure_setup();
                     path.clear();
                     path << "\"" << pathbuffer << "\\timetagger_setup.py\"";
                     fs.run(path.str());
                 }
-
-                //ez a meres, a program megvarja a kezdes idopontjat es lefuttatja a merest
-                else if(fs.is_in(recvbuf, "start")){
-                    fs.wait_until(recvbuf + 6);
-                    path.clear();
-                    path << "\"" << pathbuffer << "\\timestamps_acquisition.py\"";
-                    fs.run(path.str());
-                }*/
 
                 if(fs.is_same_str(recvbuf, "read_data_file")){
                     std::vector<std::string> files = uploadFiles("./data", "bme");
@@ -232,17 +279,91 @@ int main(void)
                     send(ClientSocket, eotMarker.c_str(), eotMarker.size(), 0);
                 }
 
-                if (fs.is_in(recvbuf, "rotate")) {
+                else if (fs.is_in(recvbuf, "rotate")) {
                     std::istringstream iss(recvbuf);
-                    std::string command, deviceName;
-                    double angle = 0.0;
-                    iss >> command >> deviceName >> angle;
+                    std::string command, deviceName, mode, startTime;
+                    double duration = -1.0;
+                    bool hasStartTime = false;
+
+                    iss >> command >> deviceName >> mode;
+
+                    if (!(iss >> duration)) {
+                        duration = -1.0;  // no duration provided
+                    }
+
+                    if (iss >> startTime) {
+                        hasStartTime = true;
+                    }
 
                     if (deviceName == "wigner2") {
-                        device_wigner_2.moveToPosition(angle);
-                    } 
+                        double angle = 0.0;
+                        bool runMeasurement = false;
+
+                        if (mode == "full_phase") {
+                            // perform full phase scan
+                            runMeasurement = true;
+                            angle = 0.0;  // could represent starting point
+                        } 
+                        else if (mode == "fine_scan") {
+                            // perform fine scan around optimal point
+                            runMeasurement = true;
+                            angle = 0.0;
+                        } 
+                        else {
+                            // numeric mode = rotate by given angle
+                            try {
+                                angle = std::stod(mode);
+                            } catch (...) {
+                                printf("Invalid angle format: %s\n", mode.c_str());
+                                return;
+                            }
+                        }
+
+                        // Always rotate first
+                        if(!runMeasurement){
+                            device_wigner_2.setRelParam(angle);
+                            device_wigner_2.moveRel();
+                        }
+
+                        if (runMeasurement && duration > 0.0 && hasStartTime) {
+
+                            if(mode == "fine_scan"){
+                                device_wigner_2.setRelParam(-10.0);
+                                device_wigner_2.moveRel();
+                            }
+
+                            // Wait until start time
+                            fs.wait_until(startTime.c_str());
+
+                            // Build Python command
+                            std::ostringstream pyCmd;
+                            pyCmd << "\""
+                                << pathbuffer
+                                << "\\timestamps_acquisition.py\""
+                                << " --duration " << duration;
+
+                            fs.run(pyCmd.str());
+
+                            if(mode == "full_phase"){
+                                device_wigner_2.setRelParam(180.0);
+                                device_wigner_2.moveRel();
+                            }
+
+                            if(mode == "fine_scan"){
+                                device_wigner_2.setRelParam(10.0);
+                                device_wigner_2.moveRel();
+                            }
+
+                            // Clamp collected data
+                            std::string end = fs.print_gpstime();
+                            clampData("./data", fs.calculate_time_diff(startTime.c_str(), end.c_str()));
+                        } else if (!runMeasurement) {
+                            printf("Rotation only (no measurement triggered).\n");
+                        }
+                    }
                     else if (deviceName == "wigner4") {
-                        device_wigner_4.moveToPosition(angle);
+                        device_wigner_4.setRelParam(0.0);  // placeholder
+                        device_wigner_4.moveRel();
                     }
                 }
 

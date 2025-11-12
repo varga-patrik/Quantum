@@ -1,39 +1,61 @@
 #include "orchestrator.h"
 
-std::string Orchestrator::runNextStep(){
-    switch (stepIndex)
-    {
-    case 1:
-        stepIndex++;
-        return homeAll();
 
-    case 2:
-        stepIndex++;
-        return "setup";
-    
-    case 3:
-        stepIndex++;
-        return "start " + fs.start_time();
 
-    case 4:
-        stepIndex++;
-        return "rotate wigner2 180";
+std::string Orchestrator::runNextStep() {
+    switch (currentStep) {
 
-    case 5:
-        stepIndex++;
-        return "read_data_file";
+        case OrchestratorStep::HomeAll:
+            currentStep = OrchestratorStep::Setup;
+            return homeAll();
 
-    case 6:
-        stepIndex++;
-        analyzeData();
-        return "no command";
-    
-    case 7:
-        stepIndex = 1;
-        return runQWPOptimizationStep();
-        
-    default:
-        return "exit";
+        case OrchestratorStep::Setup:
+            currentStep = OrchestratorStep::MeasureFullPhase;
+            clearDataFolder(); // clean before new measurements
+            return "setup";
+
+        case OrchestratorStep::MeasureFullPhase:
+            currentStep = OrchestratorStep::ReadData;
+            return "rotate wigner2 full_phase 23 " + fs.start_time(); 
+
+        case OrchestratorStep::ReadData:
+            currentStep = OrchestratorStep::AnalyzeData;
+            return "read_data_file";
+
+        case OrchestratorStep::AnalyzeData:
+            currentStep = OrchestratorStep::FindMinVisibility;
+            analyzeData();
+            return "no command";
+
+        case OrchestratorStep::FindMinVisibility:
+            currentStep = OrchestratorStep::AdjustQWP;
+            return rotateToMinVis(); 
+
+        case OrchestratorStep::AdjustQWP:
+            currentStep = OrchestratorStep::FineScan;
+            prepareQWPScan(false); // coarse adjustment step
+            return runQWPOptimizationStep(); // uses existing function to choose rotation
+
+        case OrchestratorStep::FineScan:
+            currentStep = OrchestratorStep::CheckImprovement;
+            prepareQWPScan(true); // fine scan around ±10°
+            return "rotate wigner2 fine_scan 5 " + fs.start_time();
+
+        case OrchestratorStep::CheckImprovement:
+            if (hasConverged()) {
+                currentStep = OrchestratorStep::Exit;
+                return "exit";
+            } else {
+                currentStep = OrchestratorStep::MeasureFullPhase;
+                clearDataFolder();
+                return "continue optimization";
+            }
+
+        case OrchestratorStep::Exit:
+            return "exit";
+
+        default:
+            return "exit";
     }
 }
 
@@ -51,6 +73,31 @@ std::string Orchestrator::homeAll(){
     return "home";
 }
 
+std::string Orchestrator::rotateToMinVis(){
+    if (coincidences.empty()) {
+        return "rotate wigner2 0"; // fallback if no data
+    }
+
+    // Find the index of the minimum coincidence count
+    size_t minIndex = 0;
+    uint64_t minValue = coincidences[0];
+
+    for (size_t i = 1; i < coincidences.size(); ++i) {
+        if (coincidences[i] < minValue) {
+            minValue = coincidences[i];
+            minIndex = i;
+        }
+    }
+
+    // Each bin corresponds to degreeStep, angle in middle of bin
+    double bestAngle = (static_cast<double>(minIndex) + 0.5) * degreeStep;
+
+    // Return the command string
+    std::ostringstream command;
+    command << "rotate wigner2 " << bestAngle;
+    return command.str();
+}
+
 void Orchestrator::clearDataFolder(){
     try {
         if (!std::filesystem::exists(dataFolder)) return;
@@ -66,14 +113,24 @@ void Orchestrator::clearDataFolder(){
     }
 }
 
+bool Orchestrator::hasConverged(){
+    static double previousVisibility = 0.0;  // remembers last scan's visibility
+    double currentVisibility = computeVisibility();
 
+    if (std::abs(currentVisibility - previousVisibility) < improvementThreshold) {
+        return true;
+    } else {
+        previousVisibility = currentVisibility;
+        return false;
+    }
+}
 
 void Orchestrator::analyzeData() {
     coincidences.clear(); // ensure we start fresh
 
     // Get all relevant client and server files
-    std::vector<std::string> clientFiles = collectDataFiles("client");
-    std::vector<std::string> serverFiles = collectDataFiles("server");
+    std::vector<std::string> clientFiles = collectDataFiles("bme");
+    std::vector<std::string> serverFiles = collectDataFiles("wigner");
 
     std::cout << "Found " << clientFiles.size() << " client files and "
               << serverFiles.size() << " server files.\n";
