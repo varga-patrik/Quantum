@@ -15,12 +15,14 @@ from .config import (
     CORRELATION_LABELS,
     HISTOGRAM_COLORS,
     HISTOGRAM_LABELS,
-    DEFAULT_SERIALS
+    DEFAULT_SERIALS,
+    DEFAULT_LOCAL_SERIALS,
+    DEFAULT_REMOTE_SERIALS
 )
 
 from .helpers import format_number, format_angles
 from .plot_updater import PlotUpdater
-from .optimizer_row import OptimizerRow
+from .optimizer_row_extended import OptimizerRowExtended
 
 __all__ = [
     'DEFAULT_TC_ADDRESS',
@@ -38,8 +40,10 @@ __all__ = [
     'HISTOGRAM_COLORS',
     'HISTOGRAM_LABELS',
     'DEFAULT_SERIALS',
+    'DEFAULT_LOCAL_SERIALS',
+    'DEFAULT_REMOTE_SERIALS',
     'format_number',
     'format_angles',
     'PlotUpdater',
-    'OptimizerRow'
+    'OptimizerRowExtended'
 ]

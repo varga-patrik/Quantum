@@ -1,22 +1,30 @@
-"""Optimizer row component for polarization controller."""
+"""Extended optimizer row supporting both local and remote device control."""
 
 import threading
 import tkinter as tk
 from tkinter import ttk
+from typing import Optional
 
 from .helpers import format_number, format_angles
 from device_hander import MPC320Controller, TimeController as TCWrapper
 from functions import optimize_paddles
 
 
-class OptimizerRow:
-    """Manages a single row in the polarization optimizer tab."""
+class OptimizerRowExtended:
+    """
+    Extended optimizer row that can control both local and remote MPC320 devices.
+    Remote control sends commands via PeerConnection.
+    """
     
-    def __init__(self, frame, row_idx, tc_address, action_color, default_serial=None, default_channel=1):
+    def __init__(self, frame, row_idx, tc_address, action_color, 
+                 is_remote: bool = False, peer_connection=None,
+                 default_serial=None, default_channel=1):
         self.frame = frame
         self.row_idx = row_idx
         self.tc_address = tc_address
         self.action_color = action_color
+        self.is_remote = is_remote
+        self.peer_connection = peer_connection
         
         # Runtime state
         self.controller = None
@@ -37,6 +45,10 @@ class OptimizerRow:
         self.serial_entry = tk.Entry(self.frame, textvariable=self.serial_var, width=14)
         self.serial_entry.grid(row=row, column=0, padx=3)
         
+        # Style serial entry for remote rows (light blue background)
+        if self.is_remote:
+            self.serial_entry.config(background='#E3F2FD')  # Light blue for remote
+        
         # Channel selector
         self.channel_var = tk.IntVar(value=default_channel)
         self.channel_box = ttk.Combobox(self.frame, values=[1, 2, 3, 4], width=5, state="readonly")
@@ -51,6 +63,10 @@ class OptimizerRow:
         self.best_angles_lbl = tk.Label(self.frame, text="- , - , -", width=16)
         self.best_value_lbl = tk.Label(self.frame, text="-", width=10)
         self.status_lbl = tk.Label(self.frame, text="Idle", width=18)
+        
+        # Remote indicator
+        if self.is_remote:
+            self.status_lbl.config(foreground='blue')
         
         self.start_angles_lbl.grid(row=row, column=2)
         self.start_value_lbl.grid(row=row, column=3)
@@ -88,12 +104,60 @@ class OptimizerRow:
             self.best_value_lbl.config(text=format_number(int(best_value)))
             self.status_lbl.config(text=f"Iter {it}")
             self.last_iter = it
+            
+            # Send progress update to peer (if local row and connected)
+            if not self.is_remote and self.peer_connection and self.peer_connection.is_connected():
+                self.peer_connection.send_command('PROGRESS_UPDATE', {
+                    'row_index': self.row_idx,
+                    'iteration': it,
+                    'angles': list(angles),
+                    'value': int(value),
+                    'best_angles': list(best_angles),
+                    'best_value': int(best_value)
+                })
         except Exception:
             pass
     
-    def _run_optimization(self):
-        """Run the optimization process in background thread."""
+    def handle_remote_progress(self, data: dict):
+        """Handle progress update from remote peer."""
+        try:
+            it = data.get('iteration', 0)
+            angles = data.get('angles', [0, 0, 0])
+            value = data.get('value', 0)
+            best_angles = data.get('best_angles', [0, 0, 0])
+            best_value = data.get('best_value', 0)
+            
+            self._on_progress(it, angles, value, best_angles, best_value)
+        except Exception as e:
+            import logging
+            logging.exception("Error handling remote progress: %s", e)
+    
+    def handle_remote_status(self, data: dict):
+        """Handle status update from remote peer."""
+        try:
+            status = data.get('status', 'Unknown')
+            self.status_lbl.config(text=status)
+            
+            if status in ['Kész', 'Hiba', 'Idle', 'Leállítva']:
+                self.start_btn['state'] = tk.NORMAL
+                self.stop_btn['state'] = tk.DISABLED
+        except Exception as e:
+            import logging
+            logging.exception("Error handling remote status: %s", e)
+    
+    def _send_status_to_peer(self, status: str):
+        """Send status update to peer."""
+        if self.peer_connection and self.peer_connection.is_connected():
+            self.peer_connection.send_command('STATUS_UPDATE', {
+                'row_index': self.row_idx,
+                'status': status
+            })
+    
+    def _run_optimization_local(self):
+        """Run local optimization process."""
         self.status_lbl.config(text="Csatlakozás...")
+        self._send_status_to_peer("Csatlakozás...")
+        
         serial = self.serial_var.get().strip()
         
         try:
@@ -103,6 +167,7 @@ class OptimizerRow:
         
         if not serial:
             self.status_lbl.config(text="Hiányzó serial")
+            self._send_status_to_peer("Hiányzó serial")
             self.start_btn['state'] = tk.NORMAL
             self.stop_btn['state'] = tk.DISABLED
             return
@@ -112,6 +177,7 @@ class OptimizerRow:
             self.controller = MPC320Controller(serial, channel).connect()
         except Exception:
             self.status_lbl.config(text="Polarizer hiba")
+            self._send_status_to_peer("Polarizer hiba")
             self.start_btn['state'] = tk.NORMAL
             self.stop_btn['state'] = tk.DISABLED
             return
@@ -121,6 +187,7 @@ class OptimizerRow:
             self.tc = TCWrapper(self.tc_address).connect()
         except Exception:
             self.status_lbl.config(text="TC hiba")
+            self._send_status_to_peer("TC hiba")
             try:
                 self.controller.disconnect()
             except Exception:
@@ -131,6 +198,7 @@ class OptimizerRow:
             return
         
         self.status_lbl.config(text="Fut...")
+        self._send_status_to_peer("Fut...")
         self.stop_event.clear()
         
         try:
@@ -151,14 +219,46 @@ class OptimizerRow:
                 progress=self._on_progress,
                 stop_event=self.stop_event,
             )
-            self.status_lbl.config(text=f"Kész (iter {self.last_iter})")
+            final_status = f"Kész (iter {self.last_iter})"
+            self.status_lbl.config(text=final_status)
+            self._send_status_to_peer(final_status)
         except Exception:
             self.status_lbl.config(text="Hiba")
+            self._send_status_to_peer("Hiba")
         finally:
             self._cleanup_connections()
     
+    def _run_optimization_remote(self):
+        """Send remote optimization command via peer connection."""
+        if self.peer_connection is None or not self.peer_connection.is_connected():
+            self.status_lbl.config(text="Nincs kapcsolat")
+            self.start_btn['state'] = tk.NORMAL
+            self.stop_btn['state'] = tk.DISABLED
+            return
+        
+        serial = self.serial_var.get().strip()
+        
+        try:
+            channel = int(self.channel_box.get())
+        except Exception:
+            channel = 1
+        
+        # Send start command to peer
+        success = self.peer_connection.send_command('OPTIMIZE_START', {
+            'row_index': self.row_idx,
+            'channel': channel,
+            'serial': serial
+        })
+        
+        if success:
+            self.status_lbl.config(text="Távoli fut...")
+        else:
+            self.status_lbl.config(text="Küldési hiba")
+            self.start_btn['state'] = tk.NORMAL
+            self.stop_btn['state'] = tk.DISABLED
+    
     def _cleanup_connections(self):
-        """Clean up controller and TC connections."""
+        """Clean up controller and TC connections (local only)."""
         try:
             if self.tc is not None:
                 self.tc.close()
@@ -181,16 +281,35 @@ class OptimizerRow:
         self.start_btn['state'] = tk.DISABLED
         self.stop_btn['state'] = tk.NORMAL
         self.started_set = False
-        self.thread = threading.Thread(target=self._run_optimization, daemon=True)
+        
+        if self.is_remote:
+            # Send remote command
+            self.thread = threading.Thread(target=self._run_optimization_remote, daemon=True)
+        else:
+            # Run local optimization
+            self.thread = threading.Thread(target=self._run_optimization_local, daemon=True)
+        
         self.thread.start()
     
     def _on_stop(self):
         """Stop button handler."""
         self.status_lbl.config(text="Leállítás...")
-        self.stop_event.set()
+        
+        if self.is_remote:
+            # Send stop command to peer
+            if self.peer_connection is not None and self.peer_connection.is_connected():
+                self.peer_connection.send_command('OPTIMIZE_STOP', {
+                    'row_index': self.row_idx
+                })
+        else:
+            # Stop local optimization
+            self.stop_event.set()
     
     def has_serial(self):
         """Check if row has a serial number entered."""
+        if self.is_remote:
+            # Remote rows are always "ready" if connected
+            return self.peer_connection is not None and self.peer_connection.is_connected()
         return bool(self.serial_var.get().strip())
     
     def cleanup(self):
