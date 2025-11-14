@@ -217,7 +217,7 @@ int main(int argc, char **argv)
                 fs.measure_setup();
                 path.clear();
                 path << "\"" << pathbuffer << "\\timetagger_setup.py\"";
-                fs.run(path.str());
+                //fs.run(path.str());
             }
 
             iResult = send( ConnectSocket, sendbuf.c_str(), DEFAULT_BUFLEN, 0 );
@@ -229,7 +229,7 @@ int main(int argc, char **argv)
                 return 1;
             }
 
-            else if(sendbuf.find("read_data_file") != std::string::npos){
+            /*else if(sendbuf.find("read_data_file") != std::string::npos){
                 while (true) {
                     char header[3];
                     int headerResult = recvAll(ConnectSocket, header, 3);
@@ -280,7 +280,8 @@ int main(int argc, char **argv)
                         fs.run(path.str());
                     }
                 } 
-            }
+            }*/
+        }
 
         device_bme_2.stopPolling();
         device_bme_4.stopPolling();

@@ -255,7 +255,7 @@ int main(void)
             if (iResult > 0) {
 
                 //setup parancs elokesziti a muszereket a meresre
-                if(fs.is_same_str(recvbuf, "setup")){
+                /*if(fs.is_same_str(recvbuf, "setup")){
                     fs.measure_setup();
                     path.clear();
                     path << "\"" << pathbuffer << "\\timetagger_setup.py\"";
@@ -315,7 +315,6 @@ int main(void)
                                 angle = std::stod(mode);
                             } catch (...) {
                                 printf("Invalid angle format: %s\n", mode.c_str());
-                                return;
                             }
                         }
 
@@ -365,7 +364,7 @@ int main(void)
                         device_wigner_4.setRelParam(0.0);  // placeholder
                         device_wigner_4.moveRel();
                     }
-                }
+                }*/
 
                 std::cout << std::endl << "Recieved: " << recvbuf << std::endl;
             }

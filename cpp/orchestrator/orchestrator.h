@@ -70,8 +70,33 @@ public:
         const double& l4s,
         const Correlator& corr,
         const std::string& dataFolderPath,
-        double stepDeg = 5.0
-    );
+        double stepDeg
+    ) :
+        fs(fsu),
+        lambda2_client(l2c),
+        lambda2_server(l2s),
+        lambda4_client(l4c),
+        lambda4_server(l4s),
+        correlator(corr),
+        currentStep(OrchestratorStep::HomeAll),
+        dataFolder(dataFolderPath),
+        degreeStep(stepDeg),
+        coincidences(),
+        improvementThreshold(0.0),
+        qwpOptSideIndex(0),
+        qwpCurrentAngle{0.0, 0.0},
+        qwpCoarseStep(2.0),
+        qwpCoarseRange(10.0),
+        qwpFineStep(0.5),
+        qwpFineRange(2.0),
+        qwpImproved(true),
+        qwpPhase(0),
+        qwpTestIndex(0),
+        qwpTestAngles(),
+        qwpBestVisibility(0.0),
+        qwpMinImprovement(0.001)
+    {
+    }
 
     // Main control
     std::string runNextStep();       // Called by TCP client loop
@@ -85,7 +110,7 @@ private:
     void clearDataFolder();              // Delete all old data files
     std::vector<std::string> collectDataFiles(const std::string& condition);
     std::vector<double> loadTimestamps(const std::filesystem::path& filepath);
-    std::vector<double> Orchestrator::calculateCoincidences(
+    std::vector<double> calculateCoincidences(
         const std::vector<double>& clientTimestamps,
         const std::vector<double>& serverTimestamps,
         double toleranceNs);

@@ -1,3 +1,5 @@
+#pragma once
+
 #include <cstdint>
 #include <fftw3.h>
 #include <inttypes.h>
@@ -28,7 +30,7 @@ typedef struct Bound {
 
 class Correlator
 {
-private:
+public:
     std::ofstream dataFile;
     const size_t chunk_size;
     fftw_complex* buff1, * buff2;
@@ -48,7 +50,7 @@ private:
     const char* modifiable_dataset2 = "ts2.bin";
     std::vector<int> marked; //torlendo ertekek indexei
 
-public:
+
     Correlator(size_t chunkSize, uint64_t Nval)
         :dataFile("a.dat"),
         chunk_size(chunkSize),
@@ -75,6 +77,36 @@ public:
         Smax.kmax = 0;
         best.max = 0.0;
         best.kmax = 0;
+    }
+
+    Correlator(const Correlator& other)
+        : dataFile("a.dat"),
+        chunk_size(other.chunk_size),
+        buff1(nullptr),
+        buff2(nullptr),
+        N(other.N),
+        buff1_size(other.buff1_size),
+        buff2_size(other.buff2_size),
+        tau(other.tau),
+        Tshift(other.Tshift),
+        Tbin(other.Tbin),
+        dataset1(nullptr),
+        dataset2(nullptr)
+    {
+        // Copy histograms
+        std::copy(other.h1,  other.h1  + Nbin, h1);
+        std::copy(other.h2,  other.h2  + Nbin, h2);
+        std::copy(other.h1d, other.h1d + Nbin, h1d);
+        std::copy(other.h2d, other.h2d + Nbin, h2d);
+
+        // Report file error if needed
+        if (!dataFile.is_open()) {
+            std::cerr << "Error: could not open a.dat for writing\n";
+        }
+
+        // Copy Smax and best structures
+        Smax = other.Smax;
+        best = other.best;
     }
 
     ~Correlator() {

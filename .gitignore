@@ -134,3 +134,4 @@ dmypy.json
 *.swp
 *.swo
 *.exe
+cpp/Correlator/rawdata

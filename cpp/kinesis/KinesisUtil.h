@@ -1,3 +1,5 @@
+#pragma once
+
 #include <stdio.h>
 #include <stdlib.h>
 //megjegyzes, ez nem tudom mi de a peldaprogramok szerint kell, elmeletileg minden mukodik nelkule is, de nem art
