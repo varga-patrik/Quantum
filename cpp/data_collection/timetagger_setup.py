@@ -11,10 +11,10 @@ from datetime import datetime, timezone
 DEFAULT_DLT_PATH = Path("C:/Program Files/IDQ/Time Controller/packages/ScpiClient")
 
 # Default Time Controller IP address
-DEFAULT_TC_ADDRESS = "148.6.27.28"
+DEFAULT_TC_ADDRESS = "172.26.34.114"
 
 # Default location where timestamps files are saved
-DEFAULT_OUTPUT_PATH = Path("C:\\Users\\DR KIS\\Desktop\\vp\\timestamps")
+DEFAULT_OUTPUT_PATH = Path("C:\\Users\\MCL\\Documents\\VargaPatrik\\Quantum\\data")
 
 def main():
 

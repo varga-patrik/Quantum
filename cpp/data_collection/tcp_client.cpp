@@ -36,6 +36,25 @@ int recvAll(SOCKET socket, char* buffer, int length) {
     return totalReceived;
 }
 
+void WaitForCommandDone(SOCKET socket) {
+
+    std::string message;
+
+    while (message != "done")
+    {
+       //read 3 byte header
+        char header[3];
+        if (recvAll(socket, header, 3) <= 0) return;
+        int readCount = ((unsigned char)header[0] << 16) |
+                        ((unsigned char)header[1] << 8) |
+                        (unsigned char)header[2];
+        //read body
+        std::vector<char> buffer(readCount);
+        if (recvAll(socket, buffer.data(), readCount) <= 0) return; 
+        message = std::string(buffer.begin(), buffer.end());
+    }
+}
+
 std::vector<std::string> uploadFiles(const std::string& folder, const std::string& condition) {
     std::vector<std::string> files;
 
@@ -57,7 +76,6 @@ std::vector<std::string> uploadFiles(const std::string& folder, const std::strin
 }
 
 void readReceivingFile(SOCKET socket, const std::vector<char>& firstChunk, int firstChunkSize) {
-    std::filesystem::create_directories("received_files");
     std::ofstream outFile("temp_receiving.bin", std::ios::binary | std::ios::trunc);
     if (!outFile) {
         std::cerr << "Failed to create output file.\n";
@@ -84,7 +102,7 @@ void readReceivingFile(SOCKET socket, const std::vector<char>& firstChunk, int f
             std::equal(eofPrefix.begin(), eofPrefix.end(), buffer.begin())) {
             
             std::string fileName(buffer.begin() + eofPrefix.size(), buffer.end());
-            std::filesystem::path destPath = std::filesystem::path("received_files") / fileName;
+            std::filesystem::path destPath = std::filesystem::path("C:\\Users\\MCL\\Documents\\VargaPatrik\\Quantum\\data") / fileName;
             outFile.close();
             std::filesystem::rename("temp_receiving.bin", destPath);
             std::cout << "Received file saved as " << destPath.string() << "\n";
@@ -111,9 +129,9 @@ int main(int argc, char **argv)
     int recvbuflen = DEFAULT_BUFLEN;
 
     //kapcsolat felepitese a gps oraval, output stringhez nem tartozik erdemi funkcio, azt korabban tesztelesre hasznaltam
-    std::string ip_text = "148.6.27.165";
+    std::string ip_text = "172.26.34.159";
     std::string output = "diff_data.csv";
-    FSUtil fs(5, ip_text, output);
+    FSUtil fs(6000, ip_text, output);
 
     char pathbuffer[1024];
     getcwd(pathbuffer, 1024);
@@ -184,8 +202,8 @@ int main(int argc, char **argv)
     //--------------------------------------------------------
 
     if(TLI_BuildDeviceList() == 0){
-        KinesisUtil device_bme_4("12345679");
-        KinesisUtil device_bme_2("12345679");
+        KinesisUtil device_bme_4("55528174");
+        KinesisUtil device_bme_2("55526814");
 
         device_bme_2.load();
         device_bme_4.load();
@@ -193,22 +211,14 @@ int main(int argc, char **argv)
         device_bme_2.startPolling(200);
         device_bme_4.startPolling(200);
 
-        device_bme_2.home();
-        device_bme_4.home();
+        //device_bme_2.home();
+        //device_bme_4.home();
         Correlator correlator(100000, (1ULL << 16));
         Orchestrator orchstrator(fs, device_bme_2, 0.0, device_bme_4, 0.0, correlator, 
-                                "C:\\Users\\Varga Patrik\\Desktop\\Quantum\\data", 5.0);
-
-        bool long_wait = false;
+                                "C:\\Users\\MCL\\Documents\\VargaPatrik\\Quantum\\data", 5.0);
 
         while(!fs.is_same_str(sendbuf.c_str(), "exit")){
 
-            if(long_wait){
-                std::this_thread::sleep_for(std::chrono::seconds(30));
-            }
-            else{
-                std::this_thread::sleep_for(std::chrono::milliseconds(500));
-            }
             std::ostringstream path;
             sendbuf = orchstrator.runNextStep();
 
@@ -217,7 +227,7 @@ int main(int argc, char **argv)
                 fs.measure_setup();
                 path.clear();
                 path << "\"" << pathbuffer << "\\timetagger_setup.py\"";
-                //fs.run(path.str());
+                fs.run(path.str());
             }
 
             iResult = send( ConnectSocket, sendbuf.c_str(), DEFAULT_BUFLEN, 0 );
@@ -229,7 +239,7 @@ int main(int argc, char **argv)
                 return 1;
             }
 
-            /*else if(sendbuf.find("read_data_file") != std::string::npos){
+            else if(sendbuf.find("read_data_file") != std::string::npos){
                 while (true) {
                     char header[3];
                     int headerResult = recvAll(ConnectSocket, header, 3);
@@ -278,9 +288,14 @@ int main(int argc, char **argv)
 
                         // Run acquisition
                         fs.run(path.str());
+                        std::this_thread::sleep_for(std::chrono::seconds(static_cast<int>(durationSec) + 1)); // ensure file is written
                     }
                 } 
-            }*/
+            }
+
+            //wait for "done"
+            WaitForCommandDone(ConnectSocket);
+
         }
 
         device_bme_2.stopPolling();

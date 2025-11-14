@@ -21,16 +21,16 @@ logger = logging.getLogger(__name__)
 DEFAULT_DLT_PATH = Path("C:/Program Files/IDQ/Time Controller/packages/ScpiClient")
 
 # Default Time Controller IP address
-DEFAULT_TC_ADDRESS = "192.168.0.156"
+DEFAULT_TC_ADDRESS = "172.26.34.114"
 
 # Default acquisition duration in seconds
 DEFAULT_ACQUISITION_DURATION = 5
 
 # Default location where timestamps files are saved
-DEFAULT_OUTPUT_PATH = Path("C:\\Users\\DR KIS\\Desktop\\vp\\timestamps")
+DEFAULT_OUTPUT_PATH = Path("C:\\Users\\MCL\\Documents\\VargaPatrik\\Quantum\\data")
 
 # Default channels on which timestamps are acquired (possible range: 1-4)
-DEFAULT_CHANNELS = [1, 2, 3, 4]
+DEFAULT_CHANNELS = [1, 2]
 
 # Include reference index
 DEFAULT_WITH_REF_INDEX = True

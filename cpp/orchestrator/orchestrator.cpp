@@ -1,7 +1,5 @@
 #include "orchestrator.h"
 
-
-
 std::string Orchestrator::runNextStep() {
     switch (currentStep) {
 
@@ -61,11 +59,9 @@ std::string Orchestrator::runNextStep() {
 
 std::string Orchestrator::homeAll(){
     lambda2_client.home();
-    lambda2_client.wait_for_command(2, 0);
     lambda2_client.deactivate();
 
     lambda4_client.home();
-    lambda4_client.wait_for_command(2, 0);
 
     lambda2_server = 0;
     lambda4_server = 4;
@@ -136,21 +132,24 @@ void Orchestrator::analyzeData() {
               << serverFiles.size() << " server files.\n";
 
     // Process each pair of client/server file
-    for (size_t i = 0; i < std::min(clientFiles.size(), serverFiles.size()); ++i) {
-        std::filesystem::path clientPath = dataFolder / std::filesystem::path(clientFiles[i]);
-        std::filesystem::path serverPath = dataFolder / std::filesystem::path(serverFiles[i]);
+    {
+        size_t pairCount = clientFiles.size() < serverFiles.size() ? clientFiles.size() : serverFiles.size();
+        for (size_t i = 0; i < pairCount; ++i) {
+            std::filesystem::path clientPath = dataFolder / std::filesystem::path(clientFiles[i]);
+            std::filesystem::path serverPath = dataFolder / std::filesystem::path(serverFiles[i]);
 
-        // Load timestamps
-        std::vector<double> clientTimestamps = loadTimestamps(clientPath);
-        std::vector<double> serverTimestamps = loadTimestamps(serverPath);
+            // Load timestamps
+            std::vector<double> clientTimestamps = loadTimestamps(clientPath);
+            std::vector<double> serverTimestamps = loadTimestamps(serverPath);
 
-        // Calculate coincidences and append to member vector
-        std::vector<double> localCoincidences =
-            calculateCoincidences(clientTimestamps, serverTimestamps, 10.0); // tolerance: 10 ns
+            // Calculate coincidences and append to member vector
+            std::vector<double> localCoincidences =
+                calculateCoincidences(clientTimestamps, serverTimestamps, 10.0); // tolerance: 10 ns
 
-        coincidences.insert(coincidences.end(),
+            coincidences.insert(coincidences.end(),
                                 localCoincidences.begin(),
                                 localCoincidences.end());
+        }
     }
 }
 
