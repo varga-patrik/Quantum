@@ -27,10 +27,22 @@ CORRELATION_LABELS = [
 HISTOGRAM_COLORS = ['blue', 'green', 'red', 'yellow']
 HISTOGRAM_LABELS = ['1-3', '1-4', '2-3', '2-4']
 
-# Default device serials for optimizer (serial, channel)
-DEFAULT_SERIALS = [
+# Default device serials for local optimizer rows (serial, channel)
+DEFAULT_LOCAL_SERIALS = [
     ("38530254", 1),
     ("38532504", 2),
     ("38521084", 3),
     ("38530684", 4)
 ]
+
+# Default device serials for remote optimizer rows (serial, channel)
+# These are placeholders - update with actual serial numbers
+DEFAULT_REMOTE_SERIALS = [
+    ("12340001", 1),
+    ("23450002", 2),
+    ("34560003", 3),
+    ("45670004", 4)
+]
+
+# Legacy alias for backward compatibility
+DEFAULT_SERIALS = DEFAULT_LOCAL_SERIALS
