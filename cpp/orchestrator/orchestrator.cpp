@@ -9,12 +9,12 @@ std::string Orchestrator::runNextStep() {
 
         case OrchestratorStep::Setup:
             currentStep = OrchestratorStep::MeasureFullPhase;
-            clearDataFolder(); // clean before new measurements
+            clearDataFolder();
             return "setup";
 
         case OrchestratorStep::MeasureFullPhase:
             currentStep = OrchestratorStep::ReadData;
-            return "rotate wigner2 full_phase 23 " + fs.start_time(); 
+            return "rotate wigner2 full_phase 23 " + fs.start_time();
 
         case OrchestratorStep::ReadData:
             currentStep = OrchestratorStep::AnalyzeData;
@@ -27,17 +27,31 @@ std::string Orchestrator::runNextStep() {
 
         case OrchestratorStep::FindMinVisibility:
             currentStep = OrchestratorStep::AdjustQWP;
-            return rotateToMinVis(); 
+            return rotateToMinVis();
 
         case OrchestratorStep::AdjustQWP:
             currentStep = OrchestratorStep::FineScan;
-            prepareQWPScan(false); // coarse adjustment step
-            return runQWPOptimizationStep(); // uses existing function to choose rotation
+            prepareQWPScan(false); // coarse
+            return runQWPOptimizationStep();
 
         case OrchestratorStep::FineScan:
-            currentStep = OrchestratorStep::CheckImprovement;
-            prepareQWPScan(true); // fine scan around ±10°
-            return "rotate wigner2 fine_scan 5 " + fs.start_time();
+            if (areBothSidesOptimized()) {
+                currentStep = OrchestratorStep::CheckImprovement;
+                return "fine scan finished";
+            }
+
+            if (isCurrentSideOptimized()) {
+                qwpSideIndex = 1;
+                qwpPhase = 0;  
+                prepareQWPScan(false);
+                currentStep = OrchestratorStep::AdjustQWP;
+                return runQWPOptimizationStep();
+            }
+
+            // Otherwise continue scanning normally
+            currentStep = OrchestratorStep::AdjustQWP;
+            prepareQWPScan(true);
+            return runQWPOptimizationStep();
 
         case OrchestratorStep::CheckImprovement:
             if (hasConverged()) {
@@ -241,10 +255,14 @@ std::string Orchestrator::runQWPOptimizationStep() {
         prepareQWPScan(qwpPhase == 1); // coarse if phase 0, fine if phase 1
     }
 
-    // If there are remaining angles, return rotation command
     if (qwpTestIndex < qwpTestAngles.size()) {
         double angle = qwpTestAngles[qwpTestIndex++];
-        return "rotate wigner4 " + std::to_string(angle); // server QWP
+
+        // CLIENT = bme4, SERVER = wigner4
+        std::string device =
+            (qwpOptSideIndex == 0 ? "bme4" : "wigner4");
+
+        return "rotate " + device + " " + std::to_string(angle);
     } else {
         // All angles tested, update best visibility
         double visibility = computeVisibility();

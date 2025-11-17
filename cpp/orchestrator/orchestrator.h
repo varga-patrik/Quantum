@@ -119,4 +119,17 @@ private:
     std::string runQWPOptimizationStep();
     std::string rotateToMinVis();
     bool hasConverged();
+    bool isCurrentSideOptimized() 
+    {
+        return (qwpPhase == 1 && qwpImproved == false);
+    }
+
+    bool Orchestrator::areBothSidesOptimized() 
+    {
+        if (qwpSideIndex == 1 && isCurrentSideOptimized())
+            return true;
+
+        return false;
+    }
+
 };
