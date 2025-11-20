@@ -42,61 +42,74 @@ class ConnectionDialog:
                          font=('Arial', 12, 'bold'))
         title.grid(row=0, column=0, columnspan=2, pady=(0, 20))
         
-        # Role selection
+        # Role selection - determines both device serials AND network role
         role_frame = ttk.LabelFrame(main_frame, text="Computer Role", padding="10")
         role_frame.grid(row=1, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 15))
         
-        self.role_var = tk.StringVar(value="computer_a")
-        ttk.Radiobutton(role_frame, text="Computer A (Local serials: 38530254, ...)", 
-                       variable=self.role_var, value="computer_a").pack(anchor=tk.W, pady=2)
-        ttk.Radiobutton(role_frame, text="Computer B (Local serials: 12340001, ...)", 
-                       variable=self.role_var, value="computer_b").pack(anchor=tk.W, pady=2)
+        self.role_var = tk.StringVar(value="server")
+        ttk.Radiobutton(role_frame, text="Wigner - server", 
+                       variable=self.role_var, value="server").pack(anchor=tk.W, pady=2)
+        ttk.Radiobutton(role_frame, text="BME - client", 
+                       variable=self.role_var, value="client").pack(anchor=tk.W, pady=2)
         
-        # Local IP (auto-detected)
-        ttk.Label(main_frame, text="Local IP:").grid(row=2, column=0, sticky=tk.W, pady=5)
+        # Add role change callback to update UI
+        self.role_var.trace_add('write', self._on_role_change)
+        
+        # Server IP (shown differently for server vs client)
+        self.server_ip_label = ttk.Label(main_frame, text="Server IP:")
+        self.server_ip_label.grid(row=2, column=0, sticky=tk.W, pady=5)
         local_ip = self._get_local_ip()
-        self.local_ip_var = tk.StringVar(value=local_ip)
-        local_entry = ttk.Entry(main_frame, textvariable=self.local_ip_var, width=25)
-        local_entry.grid(row=2, column=1, sticky=tk.W, pady=5)
-        local_entry.config(state='readonly')
+        self.server_ip_var = tk.StringVar(value=local_ip)
+        self.server_ip_entry = ttk.Entry(main_frame, textvariable=self.server_ip_var, width=25)
+        self.server_ip_entry.grid(row=2, column=1, sticky=tk.W, pady=5)
         
-        # Peer IP (user input)
-        ttk.Label(main_frame, text="Peer IP:").grid(row=3, column=0, sticky=tk.W, pady=5)
-        self.peer_ip_var = tk.StringVar(value="127.0.0.1")  # localhost for testing
-        peer_entry = ttk.Entry(main_frame, textvariable=self.peer_ip_var, width=25)
-        peer_entry.grid(row=3, column=1, sticky=tk.W, pady=5)
-        peer_entry.focus()
-        
-        # Server Port
-        ttk.Label(main_frame, text="Server Port:").grid(row=4, column=0, sticky=tk.W, pady=5)
+        # Port
+        ttk.Label(main_frame, text="Port:").grid(row=3, column=0, sticky=tk.W, pady=5)
         self.port_var = tk.StringVar(value="27015")
         port_entry = ttk.Entry(main_frame, textvariable=self.port_var, width=25)
-        port_entry.grid(row=4, column=1, sticky=tk.W, pady=5)
+        port_entry.grid(row=3, column=1, sticky=tk.W, pady=5)
         
-        # Peer Port (for localhost testing with different ports)
-        ttk.Label(main_frame, text="Peer Port:").grid(row=5, column=0, sticky=tk.W, pady=5)
-        self.peer_port_var = tk.StringVar(value="27015")
-        peer_port_entry = ttk.Entry(main_frame, textvariable=self.peer_port_var, width=25)
-        peer_port_entry.grid(row=5, column=1, sticky=tk.W, pady=5)
-        
-        # Info label
-        info_text = "⚠️ For localhost testing: Use DIFFERENT ports!\nComputer A: Server=27015, Peer=27016\nComputer B: Server=27016, Peer=27015"
-        info_label = ttk.Label(main_frame, text=info_text, font=('Arial', 8), 
-                              foreground='#D84315', justify=tk.LEFT)
-        info_label.grid(row=6, column=0, columnspan=2, pady=(15, 10))
+        # Info label - will update based on role
+        self.info_label = ttk.Label(main_frame, text="", font=('Arial', 8), 
+                                    foreground='#D84315', justify=tk.LEFT, wraplength=380)
+        self.info_label.grid(row=4, column=0, columnspan=2, pady=(15, 10))
         
         # Buttons
         btn_frame = ttk.Frame(main_frame)
-        btn_frame.grid(row=7, column=0, columnspan=2, pady=(10, 0))
+        btn_frame.grid(row=5, column=0, columnspan=2, pady=(10, 0))
         
-        ttk.Button(btn_frame, text="Connect", command=self._on_connect, 
-                  width=12).pack(side=tk.LEFT, padx=5)
+        self.connect_btn = ttk.Button(btn_frame, text="Connect", command=self._on_connect, width=12)
+        self.connect_btn.pack(side=tk.LEFT, padx=5)
         ttk.Button(btn_frame, text="Skip", command=self._on_skip, 
                   width=12).pack(side=tk.LEFT, padx=5)
         
         # Bind Enter key
         self.dialog.bind('<Return>', lambda e: self._on_connect())
         self.dialog.bind('<Escape>', lambda e: self._on_skip())
+        
+        # Initialize UI state based on default role (after all widgets created)
+        self._on_role_change()
+    
+    def _on_role_change(self, *args):
+        """Update UI based on selected role."""
+        role = self.role_var.get()
+        
+        if role == "server":
+            # Server mode: show local IP (read-only), listen on port
+            self.server_ip_label.config(text="Local IP:")
+            local_ip = self._get_local_ip()
+            self.server_ip_var.set(local_ip)
+            self.server_ip_entry.config(state='readonly')
+            self.connect_btn.config(text="Start Server")
+            self.info_label.config(text="SERVER mode:\n• Start this first\n")
+        else:
+            # Client mode: enter server IP (editable), connect to port
+            self.server_ip_label.config(text="Server IP:")
+            self.server_ip_var.set("127.0.0.1")  # Default to localhost for testing
+            self.server_ip_entry.config(state='normal')
+            self.server_ip_entry.focus()
+            self.connect_btn.config(text="Connect")
+            self.info_label.config(text="CLIENT mode:\n• Start this second\n• Enter server IP (127.0.0.1 for localhost test)")
     
     def _get_local_ip(self) -> str:
         """Auto-detect local IP address."""
@@ -129,43 +142,37 @@ class ConnectionDialog:
     
     def _on_connect(self):
         """Handle Connect button click."""
-        peer_ip = self.peer_ip_var.get().strip()
+        server_ip = self.server_ip_var.get().strip()
         port_str = self.port_var.get().strip()
-        peer_port_str = self.peer_port_var.get().strip()
+        role = self.role_var.get()
         
         # Validate inputs
-        if not peer_ip:
-            messagebox.showerror("Error", "Please enter peer IP address")
+        if not server_ip:
+            if role == "server":
+                messagebox.showerror("Error", "Could not detect local IP address")
+            else:
+                messagebox.showerror("Error", "Please enter server IP address")
             return
         
-        if not self._validate_ip(peer_ip):
+        if not self._validate_ip(server_ip):
             messagebox.showerror("Error", "Invalid IP address format")
             return
         
         if not self._validate_port(port_str):
-            messagebox.showerror("Error", "Invalid server port number (1-65535)")
-            return
-        
-        if not self._validate_port(peer_port_str):
-            messagebox.showerror("Error", "Invalid peer port number (1-65535)")
+            messagebox.showerror("Error", "Invalid port number (1-65535)")
             return
         
         port = int(port_str)
-        peer_port = int(peer_port_str)
-        local_ip = self.local_ip_var.get()
-        role = self.role_var.get()
         
         self.result = {
-            'local_ip': local_ip,
-            'peer_ip': peer_ip,
+            'server_ip': server_ip,
             'port': port,
-            'peer_port': peer_port,
             'role': role,
             'enabled': True
         }
         
-        logger.info("Connection configured: local=%s, peer=%s:%d, server_port=%d, role=%s", 
-                   local_ip, peer_ip, peer_port, port, role)
+        logger.info("Connection configured: role=%s, server_ip=%s, port=%d", 
+                   role, server_ip, port)
         self.dialog.destroy()
     
     def _on_skip(self):

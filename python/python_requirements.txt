@@ -28,3 +28,4 @@ cffi==2.0.0
 clr_loader==0.2.7.post0
 pycparser==2.23
 pyzmq==27.1.0
+cryptography==44.0.0

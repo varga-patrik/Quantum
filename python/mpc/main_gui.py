@@ -54,6 +54,7 @@ class App:
         self._build_plot_frame()
         self._build_plot_tab()
         self._build_polarizer_tab()
+        self._build_gps_sync_tab()
 
         # Graceful shutdown handler
         self._after_id = None
@@ -64,13 +65,23 @@ class App:
         config = show_connection_dialog(self.root)
         
         if config and config.get('enabled'):
-            self.computer_role = config.get('role', 'computer_a')
+            role = config.get('role')
+            
+            # Map network role to device role
+            # Server (static IP) = Computer A devices
+            # Client (behind NAT) = Computer B devices
+            self.computer_role = "computer_a" if role == "server" else "computer_b"
             
             try:
-                self.peer_connection = PeerConnection(local_ip="0.0.0.0", server_port=config['port'])
+                # For server: bind to 0.0.0.0 (all interfaces)
+                # For client: connect to the provided server IP
+                server_ip = "0.0.0.0" if role == "server" else config['server_ip']
                 
-                # Start server (listening for peer)
-                self.peer_connection.start_server()
+                self.peer_connection = PeerConnection(
+                    mode=role,
+                    server_ip=server_ip,
+                    port=config['port']
+                )
                 
                 # Register command handlers
                 self.peer_connection.register_command_handler('OPTIMIZE_START', self._handle_remote_optimize_start)
@@ -78,16 +89,12 @@ class App:
                 self.peer_connection.register_command_handler('STATUS_UPDATE', self._handle_remote_status_update)
                 self.peer_connection.register_command_handler('PROGRESS_UPDATE', self._handle_remote_progress_update)
                 
-                # Wait a bit for server to be fully ready and give second instance time to start
-                import time
-                time.sleep(2.0)
-                
-                # Connect to peer's server port (with retries)
-                self.peer_connection.connect_to_peer(
-                    config['peer_ip'], 
-                    peer_port=config['peer_port'],
-                    retries=5
-                )
+                # Start connection (server listens, client connects)
+                if self.peer_connection.start():
+                    logger.info("Peer connection started successfully in %s mode", role)
+                else:
+                    logger.error("Failed to start peer connection")
+                    self.peer_connection = None
                     
             except Exception as e:
                 logger.error("Failed to setup peer connection: %s", e)
@@ -225,8 +232,10 @@ class App:
         self.notebook = ttk.Notebook(self.root)
         self.tab_plot = ttk.Frame(self.notebook)
         self.tab_polarizer = ttk.Frame(self.notebook)
+        self.tab_gps_sync = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_plot, text="Plotolás")
         self.notebook.add(self.tab_polarizer, text="Polarizáció kontroller")
+        self.notebook.add(self.tab_gps_sync, text="GPS Szinkronizáció")
         self.notebook.grid(row=2, column=0, sticky="news")
 
     def _build_plot_frame(self):
@@ -501,6 +510,175 @@ class App:
                 row.status_lbl.config(text="Hiányzó serial/nincs kapcsolat")
             except Exception:
                 pass
+
+    def _build_gps_sync_tab(self):
+        """Build the GPS synchronization monitoring tab."""
+        from gps_sync import get_gps_time, calculate_time_diff, format_time_diff, measure_local_drift
+        from mock_time_controller import is_mock_controller
+        
+        # Main container
+        container = tk.Frame(self.tab_gps_sync, background=self.primary_color, padx=20, pady=20)
+        container.pack(fill=tk.BOTH, expand=True)
+        
+        # Header
+        header = tk.Label(container, text="GPS Clock Synchronization Monitor", 
+                         font=('Arial', 14, 'bold'),
+                         background=self.primary_color, foreground=self.fg_color)
+        header.pack(pady=(0, 20))
+        
+        # Check if mock mode
+        if is_mock_controller(self.tc):
+            warning = tk.Label(container, 
+                             text="⚠️ GPS sync unavailable in MOCK mode\nConnect to real Time Controller to use this feature",
+                             font=('Arial', 12), foreground='#FF9800',
+                             background=self.primary_color)
+            warning.pack(pady=50)
+            return
+        
+        # LOCAL GPS TIME section
+        local_frame = tk.LabelFrame(container, text="Local GPS Time", 
+                                   font=('Arial', 11, 'bold'),
+                                   background='#E8F5E9', bd=2, relief=tk.RIDGE, padx=15, pady=10)
+        local_frame.pack(fill=tk.X, pady=(0, 15))
+        
+        self.gps_local_time_label = tk.Label(local_frame, text="--:--:--.------------",
+                                             font=('Courier New', 16, 'bold'),
+                                             background='#E8F5E9', foreground='#2E7D32')
+        self.gps_local_time_label.pack()
+        
+        # REMOTE GPS TIME section (if peer connected)
+        if self.peer_connection and self.peer_connection.is_connected():
+            remote_frame = tk.LabelFrame(container, text="Remote GPS Time", 
+                                        font=('Arial', 11, 'bold'),
+                                        background='#E3F2FD', bd=2, relief=tk.RIDGE, padx=15, pady=10)
+            remote_frame.pack(fill=tk.X, pady=(0, 15))
+            
+            self.gps_remote_time_label = tk.Label(remote_frame, text="--:--:--.------------",
+                                                  font=('Courier New', 16, 'bold'),
+                                                  background='#E3F2FD', foreground='#1565C0')
+            self.gps_remote_time_label.pack()
+            
+            # TIME OFFSET section
+            offset_frame = tk.LabelFrame(container, text="Clock Offset (Local - Remote)", 
+                                        font=('Arial', 11, 'bold'),
+                                        background='#FFF3E0', bd=2, relief=tk.RIDGE, padx=15, pady=10)
+            offset_frame.pack(fill=tk.X, pady=(0, 15))
+            
+            self.gps_offset_label = tk.Label(offset_frame, text="--- ps",
+                                            font=('Courier New', 18, 'bold'),
+                                            background='#FFF3E0', foreground='#E65100')
+            self.gps_offset_label.pack()
+        
+        # LOCAL DRIFT MONITOR section
+        drift_frame = tk.LabelFrame(container, text="Local Computer Clock Drift", 
+                                   font=('Arial', 11, 'bold'),
+                                   background='#F3E5F5', bd=2, relief=tk.RIDGE, padx=15, pady=10)
+        drift_frame.pack(fill=tk.X, pady=(0, 15))
+        
+        self.gps_drift_label = tk.Label(drift_frame, text="Click 'Measure Drift' to test",
+                                       font=('Courier New', 14),
+                                       background='#F3E5F5', foreground='#6A1B9A')
+        self.gps_drift_label.pack()
+        
+        tk.Button(drift_frame, text="Measure Local Drift (10 samples)", 
+                 background=self.action_color, font=('Arial', 10),
+                 command=self._measure_gps_drift).pack(pady=(10, 0))
+        
+        # Control buttons
+        btn_frame = tk.Frame(container, background=self.primary_color)
+        btn_frame.pack(pady=(20, 0))
+        
+        self.gps_sync_running = False
+        self.gps_sync_button = tk.Button(btn_frame, text="Start Monitoring", 
+                                         background='#4CAF50', width=20,
+                                         font=('Arial', 10, 'bold'),
+                                         command=self._toggle_gps_sync)
+        self.gps_sync_button.pack(side=tk.LEFT, padx=5)
+        
+        # Register peer command handler for GPS sync
+        if self.peer_connection:
+            self.peer_connection.register_command_handler('GPS_TIME_SYNC', self._handle_remote_gps_time)
+    
+    def _toggle_gps_sync(self):
+        """Toggle GPS synchronization monitoring."""
+        self.gps_sync_running = not self.gps_sync_running
+        
+        if self.gps_sync_running:
+            self.gps_sync_button.config(text="Stop Monitoring", background='#FF5722')
+            self._update_gps_sync()
+        else:
+            self.gps_sync_button.config(text="Start Monitoring", background='#4CAF50')
+    
+    def _update_gps_sync(self):
+        """Periodically update GPS synchronization display."""
+        if not self.gps_sync_running:
+            return
+        
+        try:
+            from gps_sync import get_gps_time, calculate_time_diff, format_time_diff
+            
+            # Get local GPS time
+            local_time = get_gps_time(self.tc)
+            if local_time:
+                self.gps_local_time_label.config(text=local_time)
+                
+                # Send to peer if connected
+                if self.peer_connection and self.peer_connection.is_connected():
+                    self.peer_connection.send_command('GPS_TIME_SYNC', {
+                        'gps_time': local_time
+                    })
+        except Exception as e:
+            logger.error(f"GPS sync update error: {e}")
+        
+        # Schedule next update
+        if self.gps_sync_running and self.root.winfo_exists():
+            self.root.after(1000, self._update_gps_sync)
+    
+    def _handle_remote_gps_time(self, data: dict):
+        """Handle GPS time received from remote peer."""
+        try:
+            from gps_sync import get_gps_time, calculate_time_diff, format_time_diff
+            
+            remote_time = data.get('gps_time')
+            if remote_time and hasattr(self, 'gps_remote_time_label'):
+                self.gps_remote_time_label.config(text=remote_time)
+                
+                # Calculate offset
+                local_time = get_gps_time(self.tc)
+                if local_time:
+                    offset = calculate_time_diff(local_time, remote_time)
+                    if offset is not None:
+                        value, unit = format_time_diff(offset)
+                        self.gps_offset_label.config(text=f"{value} {unit}")
+        except Exception as e:
+            logger.error(f"Handle remote GPS time error: {e}")
+    
+    def _measure_gps_drift(self):
+        """Measure drift between computer clock and GPS clock."""
+        try:
+            from gps_sync import measure_local_drift, format_time_diff
+            
+            self.gps_drift_label.config(text="Measuring... (10 seconds)")
+            self.root.update()
+            
+            drifts = measure_local_drift(self.tc, samples=10)
+            
+            if drifts:
+                avg_drift = sum(drifts) // len(drifts)
+                min_drift = min(drifts)
+                max_drift = max(drifts)
+                
+                avg_val, avg_unit = format_time_diff(avg_drift)
+                min_val, min_unit = format_time_diff(min_drift)
+                max_val, max_unit = format_time_diff(max_drift)
+                
+                result = f"Avg: {avg_val} {avg_unit} | Min: {min_val} {min_unit} | Max: {max_val} {max_unit}"
+                self.gps_drift_label.config(text=result)
+            else:
+                self.gps_drift_label.config(text="Measurement failed")
+        except Exception as e:
+            logger.error(f"GPS drift measurement error: {e}")
+            self.gps_drift_label.config(text=f"Error: {e}")
 
 
     def _on_close(self):

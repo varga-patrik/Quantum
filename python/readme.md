@@ -10,6 +10,6 @@ This project aims to optimally and concurrently set 4 MPC320 polarisers.
 1. Clone this repository.
 2. Install dependencies:
    ```sh
-   pip install -r requirements.txt
+   pip install -r python_requirements.txt --only-binary :all:
    ```
 3. Download and install Thorlabs Kinesis (64-bit).

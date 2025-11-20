@@ -38,10 +38,10 @@ DEFAULT_LOCAL_SERIALS = [
 # Default device serials for remote optimizer rows (serial, channel)
 # These are placeholders - update with actual serial numbers
 DEFAULT_REMOTE_SERIALS = [
-    ("12340001", 1),
-    ("23450002", 2),
-    ("34560003", 3),
-    ("45670004", 4)
+    ("38442764", 1),
+    ("00000000", 2),
+    ("00000000", 3),
+    ("38290024", 4)
 ]
 
 # Legacy alias for backward compatibility

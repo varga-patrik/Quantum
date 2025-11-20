@@ -6,6 +6,7 @@ import json
 import logging
 import time
 from typing import Optional, Callable, Dict, Any
+from secure_channel import SecureChannel
 
 logger = logging.getLogger(__name__)
 
@@ -18,21 +19,36 @@ CONNECTION_TIMEOUT = 10.0  # seconds
 
 class PeerConnection:
     """
-    Bidirectional peer-to-peer TCP connection.
-    Each instance acts as both server (listening) and client (connecting).
+    TCP connection supporting both pure server and pure client modes.
+    
+    Server mode: Only listens for incoming connection (for static IP with port forwarding)
+    Client mode: Only connects to server (for NAT/router behind setup)
     """
     
-    def __init__(self, local_ip: str = "0.0.0.0", server_port: int = DEFAULT_PORT):
-        self.local_ip = local_ip
-        self.server_port = server_port
+    def __init__(self, mode: str = "server", server_ip: str = "0.0.0.0", port: int = DEFAULT_PORT):
+        """
+        Initialize connection.
+        
+        Args:
+            mode: "server" (listen only) or "client" (connect only)
+            server_ip: For server mode: IP to bind to (0.0.0.0 = all interfaces)
+                      For client mode: Server IP to connect to
+            port: Port number (server listens on this, client connects to this)
+        """
+        self.mode = mode
+        self.server_ip = server_ip
+        self.port = port
         self.peer_ip: Optional[str] = None
-        self.peer_port: int = DEFAULT_PORT  # Will be set in connect_to_peer
         
         # Connection state
         self.connected = False
         self.server_socket: Optional[socket.socket] = None
         self.client_socket: Optional[socket.socket] = None
         self.peer_socket: Optional[socket.socket] = None
+        
+        # Security
+        self.secure_channel = SecureChannel()
+        self.encryption_ready = False
         
         # Threading
         self.server_thread: Optional[threading.Thread] = None
@@ -44,18 +60,34 @@ class PeerConnection:
         self.command_handlers: Dict[str, Callable] = {}
         self.last_heartbeat = time.time()
         
-        logger.info("PeerConnection initialized on %s:%d", local_ip, server_port)
+        logger.info("PeerConnection initialized: mode=%s, server_ip=%s, port=%d (encrypted)", 
+                   mode, server_ip, port)
     
     def register_command_handler(self, command: str, handler: Callable):
         """Register a handler function for a specific command type."""
         self.command_handlers[command] = handler
     
-    def start_server(self):
-        """Start listening for incoming peer connections."""
+    def start(self) -> bool:
+        """
+        Start connection based on mode.
+        
+        For server mode: Start listening for incoming connection
+        For client mode: Connect to server
+        
+        Returns:
+            bool: True if started successfully
+        """
+        if self.mode == "server":
+            return self._start_server()
+        else:
+            return self._connect_to_server()
+    
+    def _start_server(self) -> bool:
+        """Start listening for incoming peer connections (server mode only)."""
         try:
             self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.server_socket.bind((self.local_ip, self.server_port))
+            self.server_socket.bind((self.server_ip, self.port))
             self.server_socket.listen(1)
             self.server_socket.settimeout(1.0)  # Non-blocking accept
             
@@ -65,38 +97,165 @@ class PeerConnection:
             # Give server thread time to start
             time.sleep(0.1)
             
-            logger.info("Server started listening on %s:%d", self.local_ip, self.server_port)
+            logger.info("Server listening on %s:%d (waiting for client...)", self.server_ip, self.port)
+            return True
         except Exception as e:
             logger.exception("Failed to start server: %s", e)
-            raise
+            return False
     
-    def connect_to_peer(self, peer_ip: str, peer_port: int = DEFAULT_PORT, timeout: float = CONNECTION_TIMEOUT, retries: int = 3) -> bool:
-        """Connect to a remote peer as client with retry logic."""
-        self.peer_ip = peer_ip
-        self.peer_port = peer_port
-        
+    def _send_raw(self, data: dict) -> bool:
+        """Send raw unencrypted message (only for handshake)."""
+        try:
+            message = json.dumps(data) + '\n'
+            self.peer_socket.sendall(message.encode('utf-8'))
+            return True
+        except Exception as e:
+            logger.error("Failed to send raw message: %s", e)
+            return False
+    
+    def _receive_raw(self, timeout: float = 10.0) -> Optional[dict]:
+        """Receive raw unencrypted message (only for handshake)."""
+        try:
+            self.peer_socket.settimeout(timeout)
+            buffer = ""
+            while '\n' not in buffer:
+                data = self.peer_socket.recv(BUFFER_SIZE)
+                if not data:
+                    return None
+                buffer += data.decode('utf-8')
+            
+            line = buffer.split('\n', 1)[0]
+            return json.loads(line.strip())
+        except Exception as e:
+            logger.error("Failed to receive raw message: %s", e)
+            return None
+    
+    def _perform_server_handshake(self) -> bool:
+        """Perform server side of secure handshake."""
+        try:
+            # Step 1: Receive client's public key
+            msg = self._receive_raw()
+            if not msg or msg.get('type') != 'PUBLIC_KEY':
+                return False
+            
+            self.secure_channel.set_peer_public_key(msg['public_key'])
+            logger.info("Received client public key")
+            
+            # Step 2: Send our public key
+            self._send_raw({
+                'type': 'PUBLIC_KEY',
+                'public_key': self.secure_channel.get_public_key_pem()
+            })
+            logger.info("Sent server public key")
+            
+            # Step 3: Generate and send encrypted session key
+            _, encrypted_key = self.secure_channel.generate_session_key()
+            self._send_raw({
+                'type': 'SESSION_KEY',
+                'encrypted_key': encrypted_key
+            })
+            logger.info("Sent encrypted session key")
+            
+            # Step 4: Authentication challenge
+            challenge = self.secure_channel.create_auth_challenge()
+            self._send_raw({
+                'type': 'AUTH_CHALLENGE',
+                'challenge': challenge
+            })
+            
+            # Step 5: Verify authentication response
+            msg = self._receive_raw()
+            if not msg or msg.get('type') != 'AUTH_RESPONSE':
+                logger.error("Invalid auth response")
+                return False
+            
+            if not self.secure_channel.verify_auth_response(msg['response']):
+                logger.error("Authentication failed - wrong password")
+                return False
+            
+            self.encryption_ready = True
+            logger.info("Server handshake complete - channel encrypted")
+            return True
+            
+        except Exception as e:
+            logger.exception("Server handshake error: %s", e)
+            return False
+    
+    def _perform_client_handshake(self) -> bool:
+        """Perform client side of secure handshake."""
+        try:
+            # Step 1: Send our public key
+            self._send_raw({
+                'type': 'PUBLIC_KEY',
+                'public_key': self.secure_channel.get_public_key_pem()
+            })
+            logger.info("Sent client public key")
+            
+            # Step 2: Receive server's public key
+            msg = self._receive_raw()
+            if not msg or msg.get('type') != 'PUBLIC_KEY':
+                return False
+            
+            self.secure_channel.set_peer_public_key(msg['public_key'])
+            logger.info("Received server public key")
+            
+            # Step 3: Receive encrypted session key
+            msg = self._receive_raw()
+            if not msg or msg.get('type') != 'SESSION_KEY':
+                return False
+            
+            self.secure_channel.receive_session_key(msg['encrypted_key'])
+            logger.info("Received and decrypted session key")
+            
+            # Step 4: Receive authentication challenge
+            msg = self._receive_raw()
+            if not msg or msg.get('type') != 'AUTH_CHALLENGE':
+                return False
+            
+            # Step 5: Send authentication response
+            response = self.secure_channel.create_auth_response(msg['challenge'])
+            self._send_raw({
+                'type': 'AUTH_RESPONSE',
+                'response': response
+            })
+            
+            self.encryption_ready = True
+            self.secure_channel.authenticated = True
+            logger.info("Client handshake complete - channel encrypted")
+            return True
+            
+        except Exception as e:
+            logger.exception("Client handshake error: %s", e)
+            return False
+    
+    def _connect_to_server(self, timeout: float = CONNECTION_TIMEOUT, retries: int = 3) -> bool:
+        """Connect to remote server (client mode only)."""
         for attempt in range(retries):
             try:
-                # Check if we already connected via server
-                if self.connected and self.peer_socket is not None:
-                    logger.info("Already connected to peer via server, skipping client connection")
-                    return True
-                
                 if attempt > 0:
                     wait_time = 1.0 * attempt  # Exponential backoff
                     logger.info("Retry attempt %d/%d after %.1fs delay", attempt + 1, retries, wait_time)
                     time.sleep(wait_time)
                 
-                logger.info("Attempting to connect to peer at %s:%d (attempt %d/%d)", 
-                           peer_ip, self.peer_port, attempt + 1, retries)
+                logger.info("Connecting to server at %s:%d (attempt %d/%d)", 
+                           self.server_ip, self.port, attempt + 1, retries)
                 self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 self.client_socket.settimeout(timeout)
                 
-                # Connect to peer's server port
-                self.client_socket.connect((peer_ip, self.peer_port))
+                # Connect to server
+                self.client_socket.connect((self.server_ip, self.port))
                 
                 self.peer_socket = self.client_socket
+                self.peer_ip = self.server_ip
                 self.connected = True
+                
+                # Perform secure handshake (client initiates)
+                if not self._perform_client_handshake():
+                    logger.error("Secure handshake failed")
+                    self.connected = False
+                    self.peer_socket.close()
+                    self.peer_socket = None
+                    continue
                 
                 # Start receiver and heartbeat threads
                 self.receiver_thread = threading.Thread(target=self._receiver_loop, daemon=True)
@@ -105,17 +264,17 @@ class PeerConnection:
                 self.heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
                 self.heartbeat_thread.start()
                 
-                logger.info("Successfully connected to peer at %s:%d (via client)", peer_ip, self.peer_port)
+                logger.info("Successfully connected to server at %s:%d (encrypted)", self.server_ip, self.port)
                 return True
                 
             except socket.timeout:
                 logger.warning("Connection attempt %d timed out after %.1f seconds", attempt + 1, timeout)
             except ConnectionRefusedError:
-                logger.warning("Connection refused on attempt %d (peer not ready yet)", attempt + 1)
+                logger.warning("Connection refused on attempt %d (server not ready yet)", attempt + 1)
             except Exception as e:
                 logger.warning("Connection attempt %d failed: %s", attempt + 1, e)
         
-        logger.error("Failed to connect to peer after %d attempts", retries)
+        logger.error("Failed to connect to server after %d attempts", retries)
         return False
     
     def _server_loop(self):
@@ -129,6 +288,14 @@ class PeerConnection:
                     self.peer_ip = addr[0]
                     self.connected = True
                     
+                    # Perform secure handshake (server responds)
+                    if not self._perform_server_handshake():
+                        logger.error("Secure handshake failed")
+                        self.connected = False
+                        self.peer_socket.close()
+                        self.peer_socket = None
+                        continue
+                    
                     # Start receiver and heartbeat threads
                     self.receiver_thread = threading.Thread(target=self._receiver_loop, daemon=True)
                     self.receiver_thread.start()
@@ -136,7 +303,7 @@ class PeerConnection:
                     self.heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
                     self.heartbeat_thread.start()
                     
-                    logger.info("Peer connected from %s (via server)", addr)
+                    logger.info("Peer connected from %s (encrypted)", addr)
                 else:
                     conn.close()
                     
@@ -170,7 +337,7 @@ class PeerConnection:
                 while '\n' in buffer:
                     line, buffer = buffer.split('\n', 1)
                     if line.strip():
-                        self._process_message(line.strip())
+                        self._process_encrypted_message(line.strip())
                         
             except socket.timeout:
                 continue
@@ -180,10 +347,15 @@ class PeerConnection:
                 self.connected = False
                 break
     
-    def _process_message(self, message: str):
-        """Process a received message."""
+    def _process_encrypted_message(self, encrypted_message: str):
+        """Process an encrypted received message."""
         try:
-            data = json.loads(message)
+            if not self.encryption_ready:
+                logger.warning("Received message before encryption ready")
+                return
+            
+            # Decrypt message
+            data = self.secure_channel.decrypt_message(encrypted_message)
             command = data.get('command')
             
             if command == 'HEARTBEAT':
@@ -216,15 +388,17 @@ class PeerConnection:
                 break
     
     def send_command(self, command: str, data: Dict[str, Any]) -> bool:
-        """Send a command to the peer."""
-        if not self.connected or self.peer_socket is None:
+        """Send an encrypted command to the peer."""
+        if not self.connected or self.peer_socket is None or not self.encryption_ready:
             return False
         
         try:
             message = {'command': command, **data}
-            self.peer_socket.sendall((json.dumps(message) + '\n').encode('utf-8'))
+            encrypted = self.secure_channel.encrypt_message(message)
+            self.peer_socket.sendall((encrypted + '\n').encode('utf-8'))
             return True
-        except Exception:
+        except Exception as e:
+            logger.error("Send command error: %s", e)
             self.connected = False
             return False
     
