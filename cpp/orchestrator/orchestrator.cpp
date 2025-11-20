@@ -21,8 +21,31 @@ std::string Orchestrator::runNextStep() {
             return "read_data_file";
 
         case OrchestratorStep::AnalyzeData:
-            currentStep = OrchestratorStep::FindMinVisibility;
+            // Analyze data (fills coincidences)
             analyzeData();
+
+            // If we were expecting a result for the last QWP angle, process it now:
+            if (qwpAwaitingResult) {
+                qwpAwaitingResult = false; // consume it
+
+                double visibility = computeVisibility();
+
+                if (visibility - qwpBestVisibility > qwpMinImprovement) {
+                    qwpBestVisibility = visibility;
+                    // the last tried angle is at qwpTestAngles[qwpTestIndex - 1]
+                    qwpCurrentAngle[qwpOptSideIndex] = qwpTestAngles[qwpTestIndex - 1];
+                    qwpImproved = true;
+                } else {
+                    qwpImproved = false;
+                }
+
+                // Keep optimizing on the same side or move according to existing runQWPOptimizationStep logic
+                currentStep = OrchestratorStep::AdjustQWP;
+                return runQWPOptimizationStep();
+            }
+
+            // Normal (non-QWP-per-angle) analysis flow (full phase, etc.)
+            currentStep = OrchestratorStep::FindMinVisibility;
             return "no command";
 
         case OrchestratorStep::FindMinVisibility:
@@ -35,20 +58,29 @@ std::string Orchestrator::runNextStep() {
             return runQWPOptimizationStep();
 
         case OrchestratorStep::FineScan:
+            // If we just issued a QWP rotation and we're waiting to do the λ/2 fine-scan now:
+            if (qwpAwaitingFineScan) {
+                qwpAwaitingFineScan = false;             // consume the event
+                currentStep = OrchestratorStep::ReadData; // next we will ask for the file
+                // Use FinePhaseCollectionTime constant (you defined it already)
+                return "rotate wigner2 fine_scan " + FinePhaseCollectionTime + " " + fs.start_time();
+            }
+
+            // Existing logic: check if both sides optimized or move to next side/scan
             if (areBothSidesOptimized()) {
                 currentStep = OrchestratorStep::CheckImprovement;
-                return "fine scan finished";
+                return "checking improvement";
             }
 
             if (isCurrentSideOptimized()) {
-                qwpSideIndex = 1;
+                qwpOptSideIndex = 1;            // switch to server (client==0, server==1)
                 qwpPhase = 0;  
                 prepareQWPScan(false);
                 currentStep = OrchestratorStep::AdjustQWP;
                 return runQWPOptimizationStep();
             }
 
-            // Otherwise continue scanning normally
+            // Otherwise continue scanning normally (no special fine-scan pending)
             currentStep = OrchestratorStep::AdjustQWP;
             prepareQWPScan(true);
             return runQWPOptimizationStep();
@@ -73,7 +105,6 @@ std::string Orchestrator::runNextStep() {
 
 std::string Orchestrator::homeAll(){
     lambda2_client.home();
-    lambda2_client.deactivate();
 
     lambda4_client.home();
 
@@ -261,6 +292,11 @@ std::string Orchestrator::runQWPOptimizationStep() {
         // CLIENT = bme4, SERVER = wigner4
         std::string device =
             (qwpOptSideIndex == 0 ? "bme4" : "wigner4");
+
+        // We will need to run a fine_scan (λ/2) and then analyze the resulting data
+        // for this QWP angle — set flags so runNextStep() follows the full sequence.
+        qwpAwaitingFineScan = true;
+        qwpAwaitingResult = true;
 
         return "rotate " + device + " " + std::to_string(angle);
     } else {

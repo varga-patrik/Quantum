@@ -54,6 +54,8 @@ private:
     double qwpFineStep = 0.5;
     double qwpFineRange = 2.0;
     bool qwpImproved = true;
+    bool qwpAwaitingFineScan = false;   // set after issuing QWP rotation, expect fine-scan next
+    bool qwpAwaitingResult = false;     // set after issuing QWP rotation, expect a result after analyze
     int qwpPhase = 0;                  // 0 = coarse scan, 1 = fine scan
     int qwpTestIndex = 0;              // index of current angle in scan
     std::vector<double> qwpTestAngles; // temporary storage for angles to try

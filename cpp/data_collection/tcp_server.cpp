@@ -45,6 +45,17 @@ std::vector<std::string> uploadFiles(const std::string& folder, const std::strin
     return files;
 }
 
+void sendDoneMessage(){
+    std::string message = "done";
+    size_t markerLen = message.size();
+    char header[3];
+    header[0] = (markerLen >> 16) & 0xFF;
+    header[1] = (markerLen >> 8) & 0xFF;
+    header[2] = markerLen & 0xFF;
+    send(clientSocket, header, 3, 0);
+    send(clientSocket, message.c_str(), markerLen, 0);
+}
+
 void clampData(const std::string& folder, int64_t time_elapsed) {
     if (!std::filesystem::exists(folder)) return;
 
@@ -246,20 +257,24 @@ int main(void)
         device_wigner_2.startPolling(200);
         device_wigner_4.startPolling(200);
 
-        device_wigner_2.home();
-        device_wigner_4.home();
-
         do {
             std::ostringstream path;
             iResult = recv(ClientSocket, recvbuf, recvbuflen, 0);
             if (iResult > 0) {
 
+                std::cout << std::endl << "Recieved: " << recvbuf << std::endl;
+
                 //setup parancs elokesziti a muszereket a meresre
-                /*if(fs.is_same_str(recvbuf, "setup")){
+                if(fs.is_same_str(recvbuf, "setup")){
                     fs.measure_setup();
                     path.clear();
                     path << "\"" << pathbuffer << "\\timetagger_setup.py\"";
                     fs.run(path.str());
+                }
+
+                if(fs.is_same_str(recvbuf, "home")){
+                    device_wigner_2.home();
+                    device_wigner_4.home();
                 }
 
                 if(fs.is_same_str(recvbuf, "read_data_file")){
@@ -364,9 +379,10 @@ int main(void)
                         device_wigner_4.setRelParam(0.0);  // placeholder
                         device_wigner_4.moveRel();
                     }
-                }*/
+                }
 
-                std::cout << std::endl << "Recieved: " << recvbuf << std::endl;
+                sendDoneMessage();
+
             }
             else if (iResult == 0)
                 printf("Connection closing...\n");

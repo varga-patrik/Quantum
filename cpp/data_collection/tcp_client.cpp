@@ -211,8 +211,6 @@ int main(int argc, char **argv)
         device_bme_2.startPolling(200);
         device_bme_4.startPolling(200);
 
-        //device_bme_2.home();
-        //device_bme_4.home();
         Correlator correlator(100000, (1ULL << 16));
         Orchestrator orchstrator(fs, device_bme_2, 0.0, device_bme_4, 0.0, correlator, 
                                 "C:\\Users\\MCL\\Documents\\VargaPatrik\\Quantum\\data", 5.0);
@@ -228,6 +226,11 @@ int main(int argc, char **argv)
                 path.clear();
                 path << "\"" << pathbuffer << "\\timetagger_setup.py\"";
                 fs.run(path.str());
+            }
+
+            if(fs.is_same_str(sendbuf.c_str(), "home")){
+                device_bme_2.home();
+                device_bme_4.home();
             }
 
             iResult = send( ConnectSocket, sendbuf.c_str(), DEFAULT_BUFLEN, 0 );
@@ -289,6 +292,17 @@ int main(int argc, char **argv)
                         // Run acquisition
                         fs.run(path.str());
                         std::this_thread::sleep_for(std::chrono::seconds(static_cast<int>(durationSec) + 1)); // ensure file is written
+                    }
+                } 
+
+                // Rotate the device
+                if (deviceName == "bme4") {
+                    try {
+                        double angle = std::stod(mode);
+                        device_bme_4.setRelParam(angle);
+                        device_bme_4.moveRel();
+                    } catch (...) {
+                        printf("Invalid angle format: %s\n", mode.c_str());
                     }
                 } 
             }
