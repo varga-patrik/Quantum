@@ -1,7 +1,7 @@
 """GUI configuration constants and theme settings."""
 
 # Hardware IP addresses for SERVER side (Wigner)
-SERVER_TC_ADDRESS = "169.254.104.112"
+SERVER_TC_ADDRESS = "148.6.27.28"
 SERVER_FS740_ADDRESS = "172.26.34.159"
 
 # Hardware IP addresses for CLIENT side (BME)
@@ -39,19 +39,19 @@ HISTOGRAM_LABELS = ['1-3', '1-4', '2-3', '2-4']
 
 # Default device serials for local optimizer rows (serial, channel)
 DEFAULT_LOCAL_SERIALS = [
-    ("38530254", 1),
-    ("38532504", 2),
-    ("38521084", 3),
-    ("38530684", 4)
+    ("38442764", 1),
+    ("00000000", 2),
+    ("00000000", 3),
+    ("38290024", 4)
 ]
 
 # Default device serials for remote optimizer rows (serial, channel)
 # These are placeholders - update with actual serial numbers
 DEFAULT_REMOTE_SERIALS = [
-    ("38442764", 1),
-    ("00000000", 2),
-    ("00000000", 3),
-    ("38290024", 4)
+    ("38532504", 1),
+    ("38530254", 2),
+    ("38521084", 3),
+    ("38530684", 4)
 ]
 
 # Legacy alias for backward compatibility
