@@ -122,10 +122,18 @@ class App:
                 logger.error("Failed to setup peer connection: %s", e)
                 self.peer_connection = None
         else:
-            # Connection skipped - use default server addresses
+            # Connection skipped - use hardware based on selected role
             self.peer_connection = None
-            self.tc_address = DEFAULT_TC_ADDRESS
-            self.fs740_address = SERVER_FS740_ADDRESS
+            role = config.get('role', 'server') if config else 'server'
+            
+            if role == "server":
+                self.computer_role = "computer_a"
+                self.tc_address = SERVER_TC_ADDRESS
+                self.fs740_address = SERVER_FS740_ADDRESS
+            else:
+                self.computer_role = "computer_b"
+                self.tc_address = CLIENT_TC_ADDRESS
+                self.fs740_address = CLIENT_FS740_ADDRESS
     
     def _connect_time_controller(self):
         """Connect to Time Controller with fallback to mock."""
@@ -492,7 +500,7 @@ class App:
         for r in range(4):
             default_serial, default_channel = local_serials[r] if r < len(local_serials) else (None, r + 1)
             row = OptimizerRowExtended(
-                local_frame, r, DEFAULT_TC_ADDRESS, self.action_color,
+                local_frame, r, self.tc_address, self.action_color,
                 is_remote=False,
                 peer_connection=self.peer_connection,
                 default_serial=default_serial,
@@ -524,7 +532,7 @@ class App:
             default_serial, default_channel = remote_serials[local_idx] if local_idx < len(remote_serials) else ("", r - 3)
             
             row = OptimizerRowExtended(
-                remote_frame, r, DEFAULT_TC_ADDRESS, self.action_color,
+                remote_frame, r, self.tc_address, self.action_color,
                 is_remote=True,
                 peer_connection=self.peer_connection,
                 default_serial=default_serial,

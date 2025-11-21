@@ -2,7 +2,7 @@
 
 # Hardware IP addresses for SERVER side (Wigner)
 SERVER_TC_ADDRESS = "148.6.27.28"
-SERVER_FS740_ADDRESS = "172.26.34.159"
+SERVER_FS740_ADDRESS = "148.6.27.165"
 
 # Hardware IP addresses for CLIENT side (BME)
 CLIENT_TC_ADDRESS = "169.254.104.112"

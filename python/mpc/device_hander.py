@@ -6,6 +6,9 @@ from functions import PaddleOptimizer
 
 import clr
 
+# Global lock to prevent simultaneous Kinesis device connections (not thread-safe)
+_kinesis_connection_lock = threading.Lock()
+
 clr.AddReference("C:\\Program Files\\Thorlabs\\Kinesis\\Thorlabs.MotionControl.DeviceManagerCLI.dll")
 clr.AddReference("C:\\Program Files\\Thorlabs\\Kinesis\\Thorlabs.MotionControl.GenericMotorCLI.dll")
 clr.AddReference("C:\\Program Files\\Thorlabs\\Kinesis\\ThorLabs.MotionControl.PolarizerCLI.dll")
@@ -32,16 +35,20 @@ class MPC320Controller:
 
     def connect(self):
         logger.info("Connecting to MPC320 device - serial number: %s", self.serial_no)
-        DeviceManagerCLI.BuildDeviceList()
-        self.device = Polarizer.CreatePolarizer(self.serial_no)
-        self.device.Connect(self.serial_no)
-        time.sleep(0.25)
-        self.device.StartPolling(250)
-        time.sleep(0.25)
-        self.device.EnableDevice()
-        time.sleep(0.25)
-        if not self.device.IsSettingsInitialized():
-            self.device.WaitForSettingsInitialized(10000)
+        
+        # Use lock to prevent simultaneous connections (Kinesis is not thread-safe)
+        with _kinesis_connection_lock:
+            DeviceManagerCLI.BuildDeviceList()
+            self.device = Polarizer.CreatePolarizer(self.serial_no)
+            self.device.Connect(self.serial_no)
+            time.sleep(0.25)
+            self.device.StartPolling(250)
+            time.sleep(0.25)
+            self.device.EnableDevice()
+            time.sleep(0.25)
+            if not self.device.IsSettingsInitialized():
+                self.device.WaitForSettingsInitialized(10000)
+        
         logger.info("MPC320 device connected - serial number: %s", self.serial_no)
         return self
 
@@ -132,29 +139,14 @@ class TimeController:
         self.counters = counters
         self.integration_time_ps = integration_time_ps
         self.tc = None
-        self._is_mock = False
 
     def connect(self):
-        try:
-            self.tc = tc_connect(self.address)
-            if self.integration_time_ps is not None:
-                setup_input_counts_over_time_acquisition(self.tc, self.integration_time_ps, list(self.counters))
-            logger.info(f"TimeController connected to {self.address}")
-        except Exception as e:
-            logger.warning(f"Failed to connect to TimeController at {self.address}: {e}")
-            logger.warning("Using mock time controller instead")
-            # Import MockTimeController to avoid circular imports
-            from mock_time_controller import MockTimeController
-            self.tc = MockTimeController()
-            self._is_mock = True
+        self.tc = tc_connect(self.address)
+        if self.integration_time_ps is not None:
+            setup_input_counts_over_time_acquisition(self.tc, self.integration_time_ps, list(self.counters))
         return self
 
     def query_counter(self, idx: int) -> int:
-        if self._is_mock:
-            # Mock returns random values
-            import random
-            return random.randint(20000, 100000)
-        
         ans = zmq_exec(self.tc, f"INPUt{idx}:COUNter?")
         try:
             return int(ans)
@@ -163,23 +155,16 @@ class TimeController:
             return 0
 
     def query_all_counters(self) -> Tuple[int, int, int, int]:
-        if self._is_mock:
-            # Mock returns random values for all counters
-            import random
-            return tuple(random.randint(20000, 100000) for _ in range(4))
-        
         return tuple(self.query_counter(i) for i in range(1, 5))
 
     def close(self):
         if self.tc is None:
             return
         try:
-            if not self._is_mock:
-                self.tc.close(0)
+            self.tc.close(0)
         except Exception:
             try:
-                if not self._is_mock:
-                    self.tc.close()
+                self.tc.close()
             except Exception:
                 pass
         finally:

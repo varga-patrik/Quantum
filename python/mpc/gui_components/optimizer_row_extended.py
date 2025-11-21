@@ -185,9 +185,11 @@ class OptimizerRowExtended:
         # Connect Time Controller
         try:
             self.tc = TCWrapper(self.tc_address).connect()
-        except Exception:
-            self.status_lbl.config(text="TC hiba")
-            self._send_status_to_peer("TC hiba")
+        except Exception as e:
+            import logging
+            logging.exception(f"TC connection failed to {self.tc_address}: {e}")
+            self.status_lbl.config(text=f"TC hiba: {str(e)[:20]}")
+            self._send_status_to_peer(f"TC hiba: {str(e)[:20]}")
             try:
                 self.controller.disconnect()
             except Exception:
