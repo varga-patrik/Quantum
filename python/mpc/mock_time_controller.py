@@ -53,8 +53,7 @@ class MockTimeControllerWrapper:
     This is used when the real TimeController cannot connect
     """
     def __init__(self, address: str, counters=("1","2","3","4"), integration_time_ps=None):
-        logger.warning(f"MockTimeControllerWrapper initialized for {address}")
-        print(f"⚠️ Using MockTimeControllerWrapper - simulating time controller at {address}")
+        logger.warning("MockTimeControllerWrapper initialized for %s", address)
         self.address = address
         self.counters = counters
         self.integration_time_ps = integration_time_ps
@@ -153,7 +152,7 @@ def safe_acquire_histograms(tc, duration, bin_width, bin_count, histograms, acqu
     try:
         return acquire_histograms_func(tc, duration, bin_width, bin_count, histograms)
     except Exception as e:
-        print(f"⚠️ Error acquiring histograms: {e}, using mock data")
+        logger.warning("Error acquiring histograms: %s, using mock data", e)
         result = {}
         for hist_id in histograms:
             result[hist_id] = np.random.poisson(50, bin_count)

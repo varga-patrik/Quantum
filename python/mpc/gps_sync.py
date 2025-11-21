@@ -1,10 +1,14 @@
 """GPS clock synchronization and drift measurement utilities."""
 
+import socket
 import logging
 from typing import Optional, Tuple
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+# FS740 connection timeout (matches C++ implementation)
+FS740_TIMEOUT = 5  # seconds
 
 
 def parse_gps_time(time_str: str) -> Optional[int]:
@@ -99,20 +103,109 @@ def format_time_diff(pico_diff: int) -> Tuple[str, str]:
         return f"{sign}{abs_diff / 1_000_000_000_000:.3f}", "s"
 
 
-def get_gps_time(tc) -> Optional[str]:
+class FS740Connection:
     """
-    Query GPS time from Time Controller.
+    Direct connection to FS740 GPS clock via TCP socket.
+    Matches C++ FSUtil implementation.
+    """
+    
+    def __init__(self, ip: str, port: int = 5025, timeout: int = 5):
+        """
+        Connect to FS740 GPS clock.
+        
+        Args:
+            ip: FS740 IP address
+            port: SCPI port (default 5025)
+            timeout: Socket timeout in seconds
+        """
+        self.ip = ip
+        self.port = port
+        self.timeout = timeout
+        self.sock = None
+        self.connected = False
+        
+        try:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.settimeout(timeout)
+            self.sock.connect((ip, port))
+            self.connected = True
+            logger.info(f"Connected to FS740 at {ip}:{port}")
+        except Exception as e:
+            logger.error(f"Failed to connect to FS740: {e}")
+            self.connected = False
+    
+    def write(self, command: str) -> bool:
+        """Send SCPI command to FS740."""
+        if not self.connected or not self.sock:
+            return False
+        
+        try:
+            if not command.endswith('\n'):
+                command += '\n'
+            self.sock.sendall(command.encode('ascii'))
+            return True
+        except Exception as e:
+            logger.error(f"FS740 write error: {e}")
+            self.connected = False
+            return False
+    
+    def read(self, buffer_size: int = 1024) -> Optional[str]:
+        """Read response from FS740."""
+        if not self.connected or not self.sock:
+            return None
+        
+        try:
+            data = self.sock.recv(buffer_size)
+            if data:
+                return data.decode('ascii').strip()
+            return None
+        except socket.timeout:
+            logger.warning("FS740 read timeout")
+            return None
+        except Exception as e:
+            logger.error(f"FS740 read error: {e}")
+            self.connected = False
+            return None
+    
+    def query(self, command: str) -> Optional[str]:
+        """Send query and read response."""
+        if self.write(command):
+            return self.read()
+        return None
+    
+    def get_gps_time(self) -> Optional[str]:
+        """Get GPS time from FS740 (matches C++ print_gpstime())."""
+        return self.query("SYST:TIME?")
+    
+    def close(self):
+        """Close connection to FS740."""
+        if self.sock:
+            try:
+                self.sock.close()
+                logger.info("Closed FS740 connection")
+            except Exception:
+                pass
+        self.connected = False
+
+
+def get_gps_time(fs740) -> Optional[str]:
+    """
+    Query GPS time from FS740 GPS clock (matches C++ implementation).
     
     Args:
-        tc: ZeroMQ socket connected to Time Controller
+        fs740: FS740Connection object
     
     Returns:
         str: GPS time string or None if query fails
     """
     try:
-        from utils.common import zmq_exec
-        time_str = zmq_exec(tc, "SYST:TIME?")
-        return time_str.strip()
+        if isinstance(fs740, FS740Connection):
+            return fs740.get_gps_time()
+        else:
+            # Fallback: try Time Controller via ZMQ (for backward compatibility)
+            from utils.common import zmq_exec
+            time_str = zmq_exec(fs740, "SYST:TIME?")
+            return time_str.strip()
     except Exception as e:
         logger.error(f"Failed to get GPS time: {e}")
         return None
@@ -147,12 +240,12 @@ def get_precise_computer_time() -> str:
     return f"{hours},{minutes},{seconds}.{nanoseconds:09d}000"
 
 
-def measure_local_drift(tc, samples: int = 10) -> list:
+def measure_local_drift(fs740, samples: int = 10) -> list:
     """
-    Measure drift between computer clock and GPS clock.
+    Measure drift between computer clock and GPS clock (matches C++ measure_timedrift()).
     
     Args:
-        tc: ZeroMQ socket connected to Time Controller
+        fs740: FS740Connection object or Time Controller ZMQ socket
         samples: Number of samples to take
     
     Returns:
@@ -168,7 +261,7 @@ def measure_local_drift(tc, samples: int = 10) -> list:
             computer_time = get_precise_computer_time()
             
             # Get GPS time
-            gps_time = get_gps_time(tc)
+            gps_time = get_gps_time(fs740)
             
             if gps_time:
                 drift = calculate_time_diff(gps_time, computer_time)
@@ -237,7 +330,7 @@ def is_earlier_time(time1_str: str, time2_str: str) -> bool:
     return diff is not None and diff < 0
 
 
-def wait_until(tc, target_time_str: str, poll_interval: float = 0.001):
+def wait_until(fs740, target_time_str: str, poll_interval: float = 0.001):
     """
     Wait until GPS clock reaches target time (matches C++ polling implementation).
     
@@ -245,7 +338,7 @@ def wait_until(tc, target_time_str: str, poll_interval: float = 0.001):
     which is more precise than time.sleep().
     
     Args:
-        tc: ZeroMQ socket connected to Time Controller
+        fs740: FS740Connection object or Time Controller ZMQ socket
         target_time_str: Target GPS time string to wait for
         poll_interval: Polling interval in seconds (default 1ms)
     """
@@ -254,7 +347,7 @@ def wait_until(tc, target_time_str: str, poll_interval: float = 0.001):
     logger.info(f"Waiting until GPS time: {target_time_str}")
     
     while True:
-        current_time = get_gps_time(tc)
+        current_time = get_gps_time(fs740)
         if current_time is None:
             logger.error("Failed to get GPS time during wait_until")
             break

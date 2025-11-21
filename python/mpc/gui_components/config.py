@@ -1,7 +1,17 @@
 """GUI configuration constants and theme settings."""
 
-# Default Time Controller IP address
-DEFAULT_TC_ADDRESS = "169.254.104.112"
+# Hardware IP addresses for SERVER side (Wigner)
+SERVER_TC_ADDRESS = "169.254.104.112"
+SERVER_FS740_ADDRESS = "172.26.34.159"
+
+# Hardware IP addresses for CLIENT side (BME)
+CLIENT_TC_ADDRESS = "169.254.104.112"
+CLIENT_FS740_ADDRESS = "172.26.34.159" 
+
+# Default fallback addresses (used if role not set)
+DEFAULT_TC_ADDRESS = SERVER_TC_ADDRESS
+DEFAULT_FS740_ADDRESS = SERVER_FS740_ADDRESS
+DEFAULT_FS740_PORT = 5025
 
 # Measurement defaults
 DEFAULT_ACQ_DURATION = 0.5

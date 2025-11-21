@@ -5,7 +5,9 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import logging
 
 from gui_components import (
-    DEFAULT_TC_ADDRESS, DEFAULT_ACQ_DURATION, DEFAULT_BIN_WIDTH,
+    DEFAULT_TC_ADDRESS, SERVER_TC_ADDRESS, CLIENT_TC_ADDRESS,
+    SERVER_FS740_ADDRESS, CLIENT_FS740_ADDRESS,
+    DEFAULT_ACQ_DURATION, DEFAULT_BIN_WIDTH,
     DEFAULT_BIN_COUNT, DEFAULT_HISTOGRAMS, BG_COLOR, FG_COLOR,
     HIGHLIGHT_COLOR, PRIMARY_COLOR, ACTION_COLOR, 
     DEFAULT_LOCAL_SERIALS, DEFAULT_REMOTE_SERIALS,
@@ -67,10 +69,17 @@ class App:
         if config and config.get('enabled'):
             role = config.get('role')
             
-            # Map network role to device role
-            # Server (static IP) = Computer A devices
-            # Client (behind NAT) = Computer B devices
-            self.computer_role = "computer_a" if role == "server" else "computer_b"
+            # Map network role to device role and set hardware addresses
+            # Server (static IP, Wigner) = Computer A devices
+            # Client (behind NAT, BME) = Computer B devices
+            if role == "server":
+                self.computer_role = "computer_a"
+                self.tc_address = SERVER_TC_ADDRESS
+                self.fs740_address = SERVER_FS740_ADDRESS
+            else:
+                self.computer_role = "computer_b"
+                self.tc_address = CLIENT_TC_ADDRESS
+                self.fs740_address = CLIENT_FS740_ADDRESS
             
             try:
                 # For server: bind to 0.0.0.0 (all interfaces)
@@ -100,20 +109,26 @@ class App:
                 logger.error("Failed to setup peer connection: %s", e)
                 self.peer_connection = None
         else:
+            # Connection skipped - use default server addresses
             self.peer_connection = None
+            self.tc_address = DEFAULT_TC_ADDRESS
+            self.fs740_address = SERVER_FS740_ADDRESS
     
     def _connect_time_controller(self):
         """Connect to Time Controller with fallback to mock."""
         from utils.common import connect, adjust_bin_width
         
+        # Use configured address based on computer role
+        tc_addr = getattr(self, 'tc_address', DEFAULT_TC_ADDRESS)
+        
         tc = None
         try:
-            tc = connect(DEFAULT_TC_ADDRESS)
+            tc = connect(tc_addr)
             self.bin_width = adjust_bin_width(tc, DEFAULT_BIN_WIDTH)
-            print("Successfully connected to Time Controller at", DEFAULT_TC_ADDRESS)
+            logger.info("Connected to Time Controller at %s", tc_addr)
         except (ConnectionError, Exception) as e:
-            print(f"Failed to connect to Time Controller: {e}")
-            print("Using MockTimeController instead")
+            logger.warning("Failed to connect to Time Controller: %s", e)
+            logger.info("Using MockTimeController")
             tc = MockTimeController()
             self.bin_width = DEFAULT_BIN_WIDTH
         
@@ -513,26 +528,34 @@ class App:
 
     def _build_gps_sync_tab(self):
         """Build the GPS synchronization monitoring tab."""
-        from gps_sync import get_gps_time, calculate_time_diff, format_time_diff, measure_local_drift
-        from mock_time_controller import is_mock_controller
+        from gps_sync import FS740Connection, get_gps_time, calculate_time_diff, format_time_diff, measure_local_drift
+        from gui_components.config import DEFAULT_FS740_ADDRESS, DEFAULT_FS740_PORT
+        
+        # Use configured address based on computer role
+        fs740_address = getattr(self, 'fs740_address', DEFAULT_FS740_ADDRESS)
         
         # Main container
         container = tk.Frame(self.tab_gps_sync, background=self.primary_color, padx=20, pady=20)
         container.pack(fill=tk.BOTH, expand=True)
         
         # Header
-        header = tk.Label(container, text="GPS Clock Synchronization Monitor", 
+        header = tk.Label(container, text="GPS Clock Synchronization Monitor (FS740)", 
                          font=('Arial', 14, 'bold'),
                          background=self.primary_color, foreground=self.fg_color)
         header.pack(pady=(0, 20))
         
-        # Check if mock mode
-        if is_mock_controller(self.tc):
+        # Connect to FS740 GPS clock (matches C++ implementation)
+        try:
+            self.fs740 = FS740Connection(fs740_address, DEFAULT_FS740_PORT)
+            if not self.fs740.connected:
+                raise ConnectionError("Failed to connect to FS740")
+        except Exception as e:
             warning = tk.Label(container, 
-                             text="⚠️ GPS sync unavailable in MOCK mode\nConnect to real Time Controller to use this feature",
+                             text=f"⚠️ GPS sync unavailable\nFailed to connect to FS740 at {fs740_address}:{DEFAULT_FS740_PORT}\n{e}",
                              font=('Arial', 12), foreground='#FF9800',
                              background=self.primary_color)
             warning.pack(pady=50)
+            self.fs740 = None
             return
         
         # LOCAL GPS TIME section
@@ -580,7 +603,7 @@ class App:
                                        background='#F3E5F5', foreground='#6A1B9A')
         self.gps_drift_label.pack()
         
-        tk.Button(drift_frame, text="Measure Local Drift (10 samples)", 
+        tk.Button(drift_frame, text="Measure Local Drift (10 samples, matches C++)", 
                  background=self.action_color, font=('Arial', 10),
                  command=self._measure_gps_drift).pack(pady=(10, 0))
         
@@ -617,8 +640,8 @@ class App:
         try:
             from gps_sync import get_gps_time, calculate_time_diff, format_time_diff
             
-            # Get local GPS time
-            local_time = get_gps_time(self.tc)
+            # Get local GPS time from FS740
+            local_time = get_gps_time(self.fs740) if hasattr(self, 'fs740') and self.fs740 else None
             if local_time:
                 self.gps_local_time_label.config(text=local_time)
                 
@@ -643,8 +666,8 @@ class App:
             if remote_time and hasattr(self, 'gps_remote_time_label'):
                 self.gps_remote_time_label.config(text=remote_time)
                 
-                # Calculate offset
-                local_time = get_gps_time(self.tc)
+                # Calculate offset using local FS740
+                local_time = get_gps_time(self.fs740) if hasattr(self, 'fs740') and self.fs740 else None
                 if local_time:
                     offset = calculate_time_diff(local_time, remote_time)
                     if offset is not None:
@@ -654,14 +677,18 @@ class App:
             logger.error(f"Handle remote GPS time error: {e}")
     
     def _measure_gps_drift(self):
-        """Measure drift between computer clock and GPS clock."""
+        """Measure drift between computer clock and GPS clock (matches C++ measure_timedrift())."""
         try:
             from gps_sync import measure_local_drift, format_time_diff
+            
+            if not hasattr(self, 'fs740') or not self.fs740:
+                self.gps_drift_label.config(text="FS740 not connected")
+                return
             
             self.gps_drift_label.config(text="Measuring... (10 seconds)")
             self.root.update()
             
-            drifts = measure_local_drift(self.tc, samples=10)
+            drifts = measure_local_drift(self.fs740, samples=10)
             
             if drifts:
                 avg_drift = sum(drifts) // len(drifts)
@@ -718,6 +745,14 @@ class App:
                 self.peer_connection.close()
         except Exception as e:
             logger.exception("Error closing peer connection: %s", e)
+        
+        # Close FS740 GPS clock connection
+        try:
+            if hasattr(self, 'fs740') and self.fs740 is not None:
+                logger.info("Closing FS740 connection...")
+                self.fs740.close()
+        except Exception as e:
+            logger.exception("Error closing FS740 connection: %s", e)
         
         # Close Time Controller socket
         try:

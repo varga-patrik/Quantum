@@ -17,7 +17,7 @@ class ConnectionDialog:
         
         self.dialog = tk.Toplevel(parent)
         self.dialog.title("Peer Connection Setup")
-        self.dialog.geometry("450x420")
+        self.dialog.geometry("450x450")
         self.dialog.resizable(False, False)
         
         # Make dialog modal
@@ -155,7 +155,7 @@ class ConnectionDialog:
             return
         
         if not self._validate_ip(server_ip):
-            messagebox.showerror("Error", "Invalid IP address format")
+            messagebox.showerror("Error", "Invalid server IP address format")
             return
         
         if not self._validate_port(port_str):
@@ -194,7 +194,11 @@ def show_connection_dialog(parent) -> dict:
     Show connection configuration dialog.
     
     Returns:
-        dict: Configuration with keys 'enabled', 'local_ip', 'peer_ip', 'port'
+        dict: Configuration with keys:
+              - 'enabled': bool - whether connection is enabled
+              - 'server_ip': str - server IP address
+              - 'port': int - connection port
+              - 'role': str - 'server' or 'client'
               If 'enabled' is False, connection should be skipped.
     """
     dialog = ConnectionDialog(parent)

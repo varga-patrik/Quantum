@@ -2,6 +2,10 @@
 
 from .config import (
     DEFAULT_TC_ADDRESS,
+    SERVER_TC_ADDRESS,
+    CLIENT_TC_ADDRESS,
+    SERVER_FS740_ADDRESS,
+    CLIENT_FS740_ADDRESS,
     DEFAULT_ACQ_DURATION,
     DEFAULT_BIN_WIDTH,
     DEFAULT_BIN_COUNT,
@@ -26,6 +30,10 @@ from .optimizer_row_extended import OptimizerRowExtended
 
 __all__ = [
     'DEFAULT_TC_ADDRESS',
+    'SERVER_TC_ADDRESS',
+    'CLIENT_TC_ADDRESS',
+    'SERVER_FS740_ADDRESS',
+    'CLIENT_FS740_ADDRESS',
     'DEFAULT_ACQ_DURATION',
     'DEFAULT_BIN_WIDTH',
     'DEFAULT_BIN_COUNT',
