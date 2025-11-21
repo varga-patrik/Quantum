@@ -39,6 +39,18 @@ class App:
         self.connection_status_label = None
         self.computer_role = "computer_a"  # Default role
         
+        # GPS synchronization state
+        self.gps_time_offset = None  # Picosecond offset (local - remote)
+        self.remote_histograms = {}  # Store remote histogram data
+        
+        # Cross-site correlation pairs (local_input, remote_input)
+        self.correlation_pairs = [
+            (1, 1),  # Client-1 ↔ Server-1
+            (2, 2),  # Client-2 ↔ Server-2
+            (3, 3),  # Client-3 ↔ Server-3
+            (4, 4),  # Client-4 ↔ Server-4
+        ]
+        
         # Show connection dialog
         self._setup_peer_connection()
 
@@ -97,6 +109,7 @@ class App:
                 self.peer_connection.register_command_handler('OPTIMIZE_STOP', self._handle_remote_optimize_stop)
                 self.peer_connection.register_command_handler('STATUS_UPDATE', self._handle_remote_status_update)
                 self.peer_connection.register_command_handler('PROGRESS_UPDATE', self._handle_remote_progress_update)
+                self.peer_connection.register_command_handler('HISTOGRAM_DATA', self._handle_remote_histogram_data)
                 
                 # Start connection (server listens, client connects)
                 if self.peer_connection.start():
@@ -169,6 +182,15 @@ class App:
         
         if remote_row_idx in self.optim_rows:
             self.optim_rows[remote_row_idx].handle_remote_progress(data)
+    
+    def _handle_remote_histogram_data(self, data: dict):
+        """Handle histogram data received from remote peer."""
+        try:
+            self.remote_histograms = data.get('histograms', {})
+            # Convert string keys back to integers
+            self.remote_histograms = {int(k): v for k, v in self.remote_histograms.items()}
+        except Exception as e:
+            logger.error("Error handling remote histogram data: %s", e)
     
     def _setup_layout(self):
         """Configure root window layout."""
@@ -279,11 +301,17 @@ class App:
         self.plot_updater = PlotUpdater(
             fig, ax, canvas, self.tc,
             DEFAULT_ACQ_DURATION, self.bin_width,
-            DEFAULT_BIN_COUNT, DEFAULT_HISTOGRAMS
+            DEFAULT_BIN_COUNT, DEFAULT_HISTOGRAMS,
+            peer_connection=self.peer_connection,
+            app_ref=self  # Pass reference to access correlation pairs and remote data
         )
 
         # Build control panel
         self._build_plot_controls()
+        
+        # Build correlation pair selector (if peer connected)
+        if self.peer_connection:
+            self._build_correlation_pair_selector()
         
         # Build live counters panel
         self._build_live_counters()
@@ -320,6 +348,77 @@ class App:
                                    not self.plot_updater.normalize_plot)
         )
         cb_norm.grid(row=1, column=2, sticky="news", pady=4)
+
+    def _build_correlation_pair_selector(self):
+        """Build UI for selecting cross-site correlation pairs."""
+        selector_frame = tk.Frame(self.tab_plot, relief=tk.GROOVE, bd=2, width=600)
+        selector_frame.grid(row=2, column=0, sticky="nws", pady=5)
+        
+        tk.Label(selector_frame, text="Cross-Site Correlation Pairs:", 
+                font=('Arial', 10, 'bold'), height=1).grid(
+            row=0, column=0, columnspan=3, sticky="w", padx=5, pady=5
+        )
+        
+        # List of active pairs
+        self.pair_listbox = tk.Listbox(selector_frame, height=6, width=35)
+        self.pair_listbox.grid(row=1, column=0, columnspan=3, sticky="ew", padx=5, pady=5)
+        
+        # Populate with default pairs
+        self._update_pair_listbox()
+        
+        # Add pair controls
+        tk.Label(selector_frame, text="Local Input:").grid(row=2, column=0, sticky="e", padx=2)
+        self.local_input_var = tk.StringVar(value="1")
+        local_combo = ttk.Combobox(selector_frame, values=["1", "2", "3", "4"], 
+                                   width=5, state="readonly", textvariable=self.local_input_var)
+        local_combo.grid(row=2, column=1, sticky="w", padx=2)
+        
+        tk.Label(selector_frame, text="Remote Input:").grid(row=3, column=0, sticky="e", padx=2)
+        self.remote_input_var = tk.StringVar(value="1")
+        remote_combo = ttk.Combobox(selector_frame, values=["1", "2", "3", "4"], 
+                                    width=5, state="readonly", textvariable=self.remote_input_var)
+        remote_combo.grid(row=3, column=1, sticky="w", padx=2)
+        
+        # Add/Remove buttons
+        tk.Button(selector_frame, text="+ Add Pair", background='#4CAF50', width=12,
+                 command=self._add_correlation_pair).grid(row=2, column=2, padx=5)
+        
+        tk.Button(selector_frame, text="- Remove Selected", background='#FF5722', width=12,
+                 command=self._remove_correlation_pair).grid(row=3, column=2, padx=5)
+    
+    def _update_pair_listbox(self):
+        """Update the correlation pair listbox display."""
+        self.pair_listbox.delete(0, tk.END)
+        for local_in, remote_in in self.correlation_pairs:
+            role_label = "Client" if self.computer_role == "computer_b" else "Server"
+            remote_role = "Server" if self.computer_role == "computer_b" else "Client"
+            self.pair_listbox.insert(tk.END, f"{role_label}-{local_in} ↔ {remote_role}-{remote_in}")
+    
+    def _add_correlation_pair(self):
+        """Add a new correlation pair."""
+        try:
+            local_in = int(self.local_input_var.get())
+            remote_in = int(self.remote_input_var.get())
+            
+            pair = (local_in, remote_in)
+            if pair not in self.correlation_pairs:
+                self.correlation_pairs.append(pair)
+                self._update_pair_listbox()
+                logger.info("Added correlation pair: Local-%d ↔ Remote-%d", local_in, remote_in)
+        except Exception as e:
+            logger.error("Error adding correlation pair: %s", e)
+    
+    def _remove_correlation_pair(self):
+        """Remove selected correlation pair."""
+        try:
+            selection = self.pair_listbox.curselection()
+            if selection:
+                idx = selection[0]
+                removed_pair = self.correlation_pairs.pop(idx)
+                self._update_pair_listbox()
+                logger.info("Removed correlation pair: %s", removed_pair)
+        except Exception as e:
+            logger.error("Error removing correlation pair: %s", e)
 
     def _build_live_counters(self):
         """Build live detector counter display."""
@@ -666,13 +765,15 @@ class App:
             if remote_time and hasattr(self, 'gps_remote_time_label'):
                 self.gps_remote_time_label.config(text=remote_time)
                 
-                # Calculate offset using local FS740
+                # Calculate and store offset using local FS740
                 local_time = get_gps_time(self.fs740) if hasattr(self, 'fs740') and self.fs740 else None
                 if local_time:
                     offset = calculate_time_diff(local_time, remote_time)
                     if offset is not None:
+                        self.gps_time_offset = offset  # Store offset in memory
                         value, unit = format_time_diff(offset)
                         self.gps_offset_label.config(text=f"{value} {unit}")
+                        logger.debug("GPS offset stored: %d ps", offset)
         except Exception as e:
             logger.error(f"Handle remote GPS time error: {e}")
     

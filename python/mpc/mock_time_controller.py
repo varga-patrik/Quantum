@@ -131,6 +131,12 @@ def safe_acquire_histograms(tc, duration, bin_width, bin_count, histograms, acqu
     """
     Wrapper for acquire_histograms that handles MockTimeController
     
+    Simulates real quantum measurement:
+    - Entangled photon source generates pairs
+    - Each site detects its half of the entangled pairs
+    - Detection events are binned into histograms
+    - Both sites should see correlated patterns
+    
     Args:
         tc: Time controller instance (real or mock)
         duration: Acquisition duration
@@ -143,11 +149,50 @@ def safe_acquire_histograms(tc, duration, bin_width, bin_count, histograms, acqu
         dict: Mock or real histogram data
     """
     if isinstance(tc, MockTimeController) or getattr(tc, '_is_mock', False):
-        # Return mock histogram data
+        # Simulate quantum entanglement source and detection
+        import time
+        
+        # Sync time across both sites (round to nearest 1 second for stable testing)
+        # This ensures both client and server use the same "entangled photon pair events"
+        sync_time = int(time.time())
+        
+        # Generate entangled photon pair events (shared "reality" between sites)
+        np.random.seed(int(sync_time * 1000) % (2**31))
+        
+        # Number of entangled pairs generated in this measurement window
+        num_pairs = np.random.poisson(1000)  # ~1000 pairs per measurement
+        
+        # Each pair has a detection time (shared between both sites)
+        pair_times = np.random.randint(0, bin_count, size=num_pairs)
+        
+        # Each site detects photons from the pairs with some efficiency
+        # In reality, which detector fires depends on photon polarization + analyzer angle
         result = {}
+        
         for hist_id in histograms:
-            # Generate random histogram with realistic Poisson distribution
-            result[hist_id] = np.random.poisson(50, bin_count)
+            histogram = np.zeros(bin_count, dtype=np.int32)
+            
+            # For each entangled pair, determine if THIS detector fires
+            # Use a deterministic but channel-dependent seed so correlations exist
+            detection_seed = (int(sync_time * 1000) + hist_id * 1000) % (2**31)
+            np.random.seed(detection_seed)
+            
+            # Each detector has ~50% efficiency (quantum detection)
+            detections = np.random.random(num_pairs) < 0.5
+            detected_times = pair_times[detections]
+            
+            # Bin the detected photon times into histogram
+            for t in detected_times:
+                if 0 <= t < bin_count:
+                    histogram[t] += 1
+            
+            # Add dark counts (detector noise)
+            np.random.seed((detection_seed + 999) % (2**31))
+            dark_counts = np.random.poisson(2, bin_count)  # Low background
+            histogram = histogram + dark_counts
+            
+            result[hist_id] = histogram
+        
         return result
     try:
         return acquire_histograms_func(tc, duration, bin_width, bin_count, histograms)
