@@ -25,7 +25,7 @@
 #define DEFAULT_BUFLEN 512
 #define DEFAULT_PORT "27015"
 
-std::vector<std::string> uploadFiles(const std::string& folder, const std::string& condition) {
+std::vector<std::string> collectFiles(const std::string& folder, const std::string& condition) {
     std::vector<std::string> files;
 
     try {
@@ -45,7 +45,7 @@ std::vector<std::string> uploadFiles(const std::string& folder, const std::strin
     return files;
 }
 
-void sendDoneMessage(){
+void sendDoneMessage(SOCKET clientSocket) {
     std::string message = "done";
     size_t markerLen = message.size();
     char header[3];
@@ -107,7 +107,46 @@ void clampData(const std::string& folder, int64_t time_elapsed) {
         inFile.close();
         outFile.close();
 
-        std::filesystem::rename(tempFilepath, filepath); // replace original with clamped file
+        // Windows may need time to release file handles
+        // Give extra time for DataLinkTarget or antivirus to release the file
+        Sleep(200);
+
+        // First, try to delete the original file (with retries)
+        bool deleted = false;
+        for (int retry = 0; retry < 10 && !deleted; ++retry) {
+            if (retry > 0) {
+                Sleep(100); // Wait 100ms between retries
+            }
+            try {
+                std::filesystem::remove(filepath);
+                deleted = true;
+            } catch (const std::filesystem::filesystem_error&) {
+                // File may still be locked, continue retrying
+            }
+        }
+
+        if (!deleted) {
+            std::cerr << "Warning: Could not delete original file " << filepath 
+                      << " - keeping temp file as " << tempFilepath << std::endl;
+            continue;
+        }
+
+        // Now rename temp file to original name (with retries)
+        bool renamed = false;
+        for (int retry = 0; retry < 10 && !renamed; ++retry) {
+            if (retry > 0) {
+                Sleep(100); // Wait 100ms between retries
+            }
+            try {
+                std::filesystem::rename(tempFilepath, filepath);
+                renamed = true;
+            } catch (const std::filesystem::filesystem_error& e) {
+                if (retry == 9) {
+                    std::cerr << "Failed to rename " << tempFilepath << " to " << filepath 
+                              << " after 10 attempts: " << e.what() << std::endl;
+                }
+            }
+        }
     }
 }
 
@@ -278,7 +317,7 @@ int main(void)
                 }
 
                 if(fs.is_same_str(recvbuf, "read_data_file")){
-                    std::vector<std::string> files = uploadFiles("./data", "bme");
+                    std::vector<std::string> files = collectFiles("./data", "bme");
                     for (const auto& file : files) {
                         sendFile(ClientSocket, file);
                     }
@@ -381,7 +420,7 @@ int main(void)
                     }
                 }
 
-                sendDoneMessage();
+                sendDoneMessage(ClientSocket);
 
             }
             else if (iResult == 0)

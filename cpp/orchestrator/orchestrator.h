@@ -126,9 +126,9 @@ private:
         return (qwpPhase == 1 && qwpImproved == false);
     }
 
-    bool Orchestrator::areBothSidesOptimized() 
+    bool areBothSidesOptimized() 
     {
-        if (qwpSideIndex == 1 && isCurrentSideOptimized())
+        if (qwpOptSideIndex == 1 && isCurrentSideOptimized())
             return true;
 
         return false;
