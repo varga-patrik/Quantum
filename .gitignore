@@ -136,3 +136,6 @@ dmypy.json
 *.exe
 cpp/Correlator/rawdata
 data
+
+# Local configuration files (site-specific)
+*/time_offset_config.json

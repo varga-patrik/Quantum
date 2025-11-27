@@ -67,15 +67,6 @@ class PlotUpdater:
         for i in range(4):
             self.last_correlation[i] = int(self.correlation_series[i, 19])
         
-        # Send histogram data to peer if connected
-        if self.peer_connection and self.peer_connection.is_connected():
-            try:
-                # Convert histograms to JSON-serializable format
-                hist_data = {str(k): [int(x) for x in v] for k, v in self.histograms.items()}
-                self.peer_connection.send_command('HISTOGRAM_DATA', {'histograms': hist_data})
-            except Exception as e:
-                logger.error(f"Failed to send histogram data: {e}")
-        
         # Calculate cross-site correlations if we have remote data
         self._update_cross_site_correlations()
 
@@ -85,6 +76,18 @@ class PlotUpdater:
                 self.beutes_szamok[j - 1] = int(safe_zmq_exec(self.tc, f"INPUt{j}:COUNter?", zmq_exec))
             except Exception:
                 self.beutes_szamok[j - 1] = random.randint(20000, 100000)
+        
+        # Send histogram and counter data to peer if connected
+        if self.peer_connection and self.peer_connection.is_connected():
+            try:
+                # Convert histograms to JSON-serializable format
+                hist_data = {str(k): [int(x) for x in v] for k, v in self.histograms.items()}
+                self.peer_connection.send_command('HISTOGRAM_DATA', {'histograms': hist_data})
+                
+                # Send counter data (already a list)
+                self.peer_connection.send_command('COUNTER_DATA', {'counters': self.beutes_szamok})
+            except Exception as e:
+                logger.error(f"Failed to send data to peer: {e}")
     
     def _update_cross_site_correlations(self):
         """Calculate cross-site correlations for selected pairs."""

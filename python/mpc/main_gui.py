@@ -3,6 +3,9 @@ from tkinter import ttk
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import logging
+import json
+import os
+from datetime import datetime
 
 from gui_components import (
     DEFAULT_TC_ADDRESS, SERVER_TC_ADDRESS, CLIENT_TC_ADDRESS,
@@ -39,8 +42,7 @@ class App:
         self.connection_status_label = None
         self.computer_role = "computer_a"  # Default role
         
-        # GPS synchronization state
-        self.gps_time_offset = None  # Picosecond offset (local - remote)
+        # Remote measurement data
         self.remote_histograms = {}  # Store remote histogram data
         
         # Cross-site correlation pairs (local_input, remote_input)
@@ -50,6 +52,11 @@ class App:
             (3, 3),  # Client-3 ↔ Server-3
             (4, 4),  # Client-4 ↔ Server-4
         ]
+        
+        # Time offset configuration (measured by C++ correlator)
+        self.time_offset_ps = None  # Time offset in picoseconds
+        self.time_offset_updated = None  # Last update timestamp
+        self._load_time_offset()
         
         # Show connection dialog
         self._setup_peer_connection()
@@ -110,6 +117,7 @@ class App:
                 self.peer_connection.register_command_handler('STATUS_UPDATE', self._handle_remote_status_update)
                 self.peer_connection.register_command_handler('PROGRESS_UPDATE', self._handle_remote_progress_update)
                 self.peer_connection.register_command_handler('HISTOGRAM_DATA', self._handle_remote_histogram_data)
+                self.peer_connection.register_command_handler('COUNTER_DATA', self._handle_remote_counter_data)
                 
                 # Start connection (server listens, client connects)
                 if self.peer_connection.start():
@@ -134,6 +142,41 @@ class App:
                 self.computer_role = "computer_b"
                 self.tc_address = CLIENT_TC_ADDRESS
                 self.fs740_address = CLIENT_FS740_ADDRESS
+    
+    def _get_config_path(self):
+        """Get path to time offset configuration file (relative to main_gui.py)."""
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        return os.path.join(script_dir, 'time_offset_config.json')
+    
+    def _load_time_offset(self):
+        """Load time offset from configuration file."""
+        try:
+            config_path = self._get_config_path()
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    data = json.load(f)
+                    self.time_offset_ps = data.get('offset_ps')
+                    self.time_offset_updated = data.get('updated')
+                    logger.info("Loaded time offset: %s ps (updated: %s)", 
+                               self.time_offset_ps, self.time_offset_updated)
+        except Exception as e:
+            logger.error("Failed to load time offset configuration: %s", e)
+            self.time_offset_ps = None
+            self.time_offset_updated = None
+    
+    def _save_time_offset(self):
+        """Save time offset to configuration file."""
+        try:
+            config_path = self._get_config_path()
+            data = {
+                'offset_ps': self.time_offset_ps,
+                'updated': self.time_offset_updated
+            }
+            with open(config_path, 'w') as f:
+                json.dump(data, f, indent=2)
+            logger.info("Saved time offset: %s ps", self.time_offset_ps)
+        except Exception as e:
+            logger.error("Failed to save time offset configuration: %s", e)
     
     def _connect_time_controller(self):
         """Connect to Time Controller with fallback to mock."""
@@ -199,6 +242,15 @@ class App:
             self.remote_histograms = {int(k): v for k, v in self.remote_histograms.items()}
         except Exception as e:
             logger.error("Error handling remote histogram data: %s", e)
+    
+    def _handle_remote_counter_data(self, data: dict):
+        """Handle detector counter data received from remote peer."""
+        try:
+            counters = data.get('counters', [0, 0, 0, 0])
+            if len(counters) == 4:
+                self.remote_beutes_szamok = counters
+        except Exception as e:
+            logger.error("Error handling remote counter data: %s", e)
     
     def _setup_layout(self):
         """Configure root window layout."""
@@ -320,6 +372,7 @@ class App:
         # Build correlation pair selector (if peer connected)
         if self.peer_connection:
             self._build_correlation_pair_selector()
+            self._build_time_offset_config()
         
         # Build live counters panel
         self._build_live_counters()
@@ -427,28 +480,152 @@ class App:
                 logger.info("Removed correlation pair: %s", removed_pair)
         except Exception as e:
             logger.error("Error removing correlation pair: %s", e)
+    
+    def _build_time_offset_config(self):
+        """Build time offset configuration section."""
+        # Time offset frame (matches C++ Correlator measured offset)
+        offset_frame = tk.LabelFrame(self.tab_plot, text="Time Offset Configuration (LOCAL - C++ Correlator)", 
+                                     font=('Arial', 10, 'bold'),
+                                     relief=tk.GROOVE, bd=2, padx=10, pady=8)
+        offset_frame.grid(row=3, column=0, sticky="ew", padx=5, pady=5)
+        
+        # Info label
+        info_label = tk.Label(offset_frame, 
+                             text="LOCAL CONFIG: Enter time offset measured by C++ Correlator at THIS site (picoseconds):",
+                             font=('Arial', 9))
+        info_label.grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 5))
+        
+        # Input field
+        tk.Label(offset_frame, text="Offset (ps):", font=('Arial', 9, 'bold')).grid(row=1, column=0, sticky="e", padx=5)
+        self.offset_entry = tk.Entry(offset_frame, width=20, font=('Courier New', 10))
+        self.offset_entry.grid(row=1, column=1, sticky="w", padx=5)
+        
+        # Set current value if exists
+        if self.time_offset_ps is not None:
+            self.offset_entry.insert(0, str(self.time_offset_ps))
+        
+        # Save button
+        save_btn = tk.Button(offset_frame, text="💾 Save Offset", 
+                            background='#2196F3', foreground='white',
+                            font=('Arial', 9, 'bold'),
+                            width=12, command=self._save_time_offset_ui)
+        save_btn.grid(row=1, column=2, padx=5)
+        
+        # Clear button
+        clear_btn = tk.Button(offset_frame, text="🗑️ Clear", 
+                             background='#FF9800', foreground='white',
+                             font=('Arial', 9, 'bold'),
+                             width=8, command=self._clear_time_offset_ui)
+        clear_btn.grid(row=1, column=3, padx=5)
+        
+        # Status display
+        status_frame = tk.Frame(offset_frame, background='#F5F5F5', relief=tk.SUNKEN, bd=1)
+        status_frame.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(8, 0))
+        
+        tk.Label(status_frame, text="Current Status:", font=('Arial', 8, 'bold'),
+                background='#F5F5F5').grid(row=0, column=0, sticky="w", padx=5, pady=2)
+        
+        self.offset_status_label = tk.Label(status_frame, text="", font=('Arial', 8),
+                                            background='#F5F5F5', foreground='#555')
+        self.offset_status_label.grid(row=0, column=1, sticky="w", padx=5, pady=2)
+        
+        # Update status display
+        self._update_time_offset_status()
+    
+    def _save_time_offset_ui(self):
+        """Save time offset from UI input."""
+        try:
+            value = self.offset_entry.get().strip()
+            if not value:
+                logger.warning("No time offset value entered")
+                return
+            
+            # Parse and validate
+            offset_ps = int(float(value))  # Convert to int (picoseconds)
+            
+            # Save to memory and file
+            self.time_offset_ps = offset_ps
+            self.time_offset_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self._save_time_offset()
+            
+            # Update status display
+            self._update_time_offset_status()
+            
+            logger.info("Time offset saved: %d ps (at %s)", offset_ps, self.time_offset_updated)
+            
+        except ValueError as e:
+            logger.error("Invalid time offset value: %s", e)
+    
+    def _clear_time_offset_ui(self):
+        """Clear time offset configuration."""
+        self.time_offset_ps = None
+        self.time_offset_updated = None
+        self._save_time_offset()
+        self.offset_entry.delete(0, tk.END)
+        self._update_time_offset_status()
+        logger.info("Time offset cleared")
+    
+    def _update_time_offset_status(self):
+        """Update the time offset status display."""
+        if self.time_offset_ps is not None and self.time_offset_updated:
+            # Format large numbers with thousands separator
+            formatted_offset = format_number(self.time_offset_ps)
+            status_text = f"✅ Offset: {formatted_offset} ps | Updated: {self.time_offset_updated}"
+            self.offset_status_label.config(text=status_text, foreground='#2E7D32')
+        else:
+            status_text = "⚠️ No offset configured"
+            self.offset_status_label.config(text=status_text, foreground='#F57C00')
 
     def _build_live_counters(self):
-        """Build live detector counter display."""
-        counters = tk.Frame(self.tab_plot, relief=tk.GROOVE, bd=2, width=600)
-        counters.grid(row=1, column=0, sticky="nws", pady=5)
+        """Build live detector counter display for local and remote."""
+        # LOCAL COUNTERS
+        local_counters = tk.Frame(self.tab_plot, relief=tk.GROOVE, bd=2, width=300, background='#E8F5E9')
+        local_counters.grid(row=1, column=0, sticky="nws", pady=5, padx=(5, 2))
         
-        tk.Label(counters, text="Detektorok beütésszámai", width=20, height=2).grid(
+        role_label = "Client" if self.computer_role == "computer_b" else "Server"
+        tk.Label(local_counters, text=f"🟢 LOCAL Detektorok beütésszámai ({role_label})", 
+                font=('Arial', 10, 'bold'), foreground='#2E7D32',
+                background='#E8F5E9', width=25, height=2).grid(
             row=0, column=0, columnspan=4, sticky="news"
         )
 
         self.beutes_labels = []
         for i in range(4):
-            tk.Label(counters, text=f"{i+1}.").grid(row=1, column=i, sticky="news")
-            lbl = tk.Label(counters, text="0", width=10)
+            tk.Label(local_counters, text=f"{i+1}.", background='#E8F5E9').grid(row=1, column=i, sticky="news")
+            lbl = tk.Label(local_counters, text="0", width=10, background='#E8F5E9')
             lbl.grid(row=2, column=i, sticky="news")
             self.beutes_labels.append(lbl)
+
+        # REMOTE COUNTERS (if peer connected)
+        if self.peer_connection:
+            remote_counters = tk.Frame(self.tab_plot, relief=tk.GROOVE, bd=2, width=300, background='#E3F2FD')
+            remote_counters.grid(row=1, column=1, sticky="nws", pady=5, padx=(2, 5))
+            
+            remote_role = "Server" if self.computer_role == "computer_b" else "Client"
+            tk.Label(remote_counters, text=f"🔵 REMOTE Detektorok beütésszámai ({remote_role})", 
+                    font=('Arial', 10, 'bold'), foreground='#1565C0',
+                    background='#E3F2FD', width=25, height=2).grid(
+                row=0, column=0, columnspan=4, sticky="news"
+            )
+
+            self.remote_beutes_labels = []
+            for i in range(4):
+                tk.Label(remote_counters, text=f"{i+1}.", background='#E3F2FD').grid(row=1, column=i, sticky="news")
+                lbl = tk.Label(remote_counters, text="---", width=10, background='#E3F2FD')
+                lbl.grid(row=2, column=i, sticky="news")
+                self.remote_beutes_labels.append(lbl)
+        else:
+            self.remote_beutes_labels = []
+
+        # Store remote counter values (received from peer)
+        self.remote_beutes_szamok = [0, 0, 0, 0]
 
         # Start periodic counter update
         self._update_counters()
 
     def _update_counters(self):
         """Periodically update counter labels from plot updater."""
+        # Update local counters
         vals = getattr(self.plot_updater, 'beutes_szamok', [0, 0, 0, 0])
         try:
             for i in range(4):
@@ -456,6 +633,18 @@ class App:
                     self.beutes_labels[i].config(text=format_number(vals[i]))
         except Exception:
             pass
+        
+        # Update remote counters
+        if self.remote_beutes_labels:
+            try:
+                for i in range(4):
+                    if self.remote_beutes_labels[i].winfo_exists():
+                        if self.peer_connection and self.peer_connection.is_connected():
+                            self.remote_beutes_labels[i].config(text=format_number(self.remote_beutes_szamok[i]))
+                        else:
+                            self.remote_beutes_labels[i].config(text="---")
+            except Exception:
+                pass
         
         if self.root.winfo_exists():
             self._after_id = self.root.after(300, self._update_counters)
@@ -635,7 +824,7 @@ class App:
 
     def _build_gps_sync_tab(self):
         """Build the GPS synchronization monitoring tab."""
-        from gps_sync import FS740Connection, get_gps_time, calculate_time_diff, format_time_diff, measure_local_drift
+        from gps_sync import FS740Connection, get_gps_time, format_time_diff, measure_local_drift
         from gui_components.config import DEFAULT_FS740_ADDRESS, DEFAULT_FS740_PORT
         
         # Use configured address based on computer role
@@ -676,28 +865,7 @@ class App:
                                              background='#E8F5E9', foreground='#2E7D32')
         self.gps_local_time_label.pack()
         
-        # REMOTE GPS TIME section (if peer connected)
-        if self.peer_connection and self.peer_connection.is_connected():
-            remote_frame = tk.LabelFrame(container, text="Remote GPS Time", 
-                                        font=('Arial', 11, 'bold'),
-                                        background='#E3F2FD', bd=2, relief=tk.RIDGE, padx=15, pady=10)
-            remote_frame.pack(fill=tk.X, pady=(0, 15))
-            
-            self.gps_remote_time_label = tk.Label(remote_frame, text="--:--:--.------------",
-                                                  font=('Courier New', 16, 'bold'),
-                                                  background='#E3F2FD', foreground='#1565C0')
-            self.gps_remote_time_label.pack()
-            
-            # TIME OFFSET section
-            offset_frame = tk.LabelFrame(container, text="Clock Offset (Local - Remote)", 
-                                        font=('Arial', 11, 'bold'),
-                                        background='#FFF3E0', bd=2, relief=tk.RIDGE, padx=15, pady=10)
-            offset_frame.pack(fill=tk.X, pady=(0, 15))
-            
-            self.gps_offset_label = tk.Label(offset_frame, text="--- ps",
-                                            font=('Courier New', 18, 'bold'),
-                                            background='#FFF3E0', foreground='#E65100')
-            self.gps_offset_label.pack()
+
         
         # LOCAL DRIFT MONITOR section
         drift_frame = tk.LabelFrame(container, text="Local Computer Clock Drift", 
@@ -724,10 +892,6 @@ class App:
                                          font=('Arial', 10, 'bold'),
                                          command=self._toggle_gps_sync)
         self.gps_sync_button.pack(side=tk.LEFT, padx=5)
-        
-        # Register peer command handler for GPS sync
-        if self.peer_connection:
-            self.peer_connection.register_command_handler('GPS_TIME_SYNC', self._handle_remote_gps_time)
     
     def _toggle_gps_sync(self):
         """Toggle GPS synchronization monitoring."""
@@ -745,18 +909,12 @@ class App:
             return
         
         try:
-            from gps_sync import get_gps_time, calculate_time_diff, format_time_diff
+            from gps_sync import get_gps_time
             
             # Get local GPS time from FS740
             local_time = get_gps_time(self.fs740) if hasattr(self, 'fs740') and self.fs740 else None
             if local_time:
                 self.gps_local_time_label.config(text=local_time)
-                
-                # Send to peer if connected
-                if self.peer_connection and self.peer_connection.is_connected():
-                    self.peer_connection.send_command('GPS_TIME_SYNC', {
-                        'gps_time': local_time
-                    })
         except Exception as e:
             logger.error(f"GPS sync update error: {e}")
         
@@ -764,26 +922,7 @@ class App:
         if self.gps_sync_running and self.root.winfo_exists():
             self.root.after(1000, self._update_gps_sync)
     
-    def _handle_remote_gps_time(self, data: dict):
-        """Handle GPS time received from remote peer."""
-        try:
-            from gps_sync import get_gps_time, calculate_time_diff, format_time_diff
-            
-            remote_time = data.get('gps_time')
-            if remote_time and hasattr(self, 'gps_remote_time_label'):
-                self.gps_remote_time_label.config(text=remote_time)
-                
-                # Calculate and store offset using local FS740
-                local_time = get_gps_time(self.fs740) if hasattr(self, 'fs740') and self.fs740 else None
-                if local_time:
-                    offset = calculate_time_diff(local_time, remote_time)
-                    if offset is not None:
-                        self.gps_time_offset = offset  # Store offset in memory
-                        value, unit = format_time_diff(offset)
-                        self.gps_offset_label.config(text=f"{value} {unit}")
-                        logger.debug("GPS offset stored: %d ps", offset)
-        except Exception as e:
-            logger.error(f"Handle remote GPS time error: {e}")
+
     
     def _measure_gps_drift(self):
         """Measure drift between computer clock and GPS clock (matches C++ measure_timedrift())."""
