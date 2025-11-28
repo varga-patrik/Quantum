@@ -6,6 +6,7 @@ import logging
 import json
 import os
 from datetime import datetime
+import numpy as np
 
 from gui_components import (
     DEFAULT_TC_ADDRESS, SERVER_TC_ADDRESS, CLIENT_TC_ADDRESS,
@@ -42,9 +43,6 @@ class App:
         self.connection_status_label = None
         self.computer_role = "computer_a"  # Default role
         
-        # Remote measurement data
-        self.remote_histograms = {}  # Store remote histogram data
-        
         # Cross-site correlation pairs (local_input, remote_input)
         self.correlation_pairs = [
             (1, 1),  # Client-1 ↔ Server-1
@@ -76,6 +74,13 @@ class App:
         self._build_plot_tab()
         self._build_polarizer_tab()
         self._build_gps_sync_tab()
+
+        # Auto-start counter display (for singles rates monitoring)
+        # This starts the background loop that reads detector counters
+        # The actual streaming/correlation needs to be started manually with "Start" button
+        if hasattr(self, 'plot_updater') and self.plot_updater:
+            self.plot_updater.start_counter_display()
+            logger.info("Auto-started detector counter display")
 
         # Graceful shutdown handler
         self._after_id = None
@@ -116,7 +121,9 @@ class App:
                 self.peer_connection.register_command_handler('OPTIMIZE_STOP', self._handle_remote_optimize_stop)
                 self.peer_connection.register_command_handler('STATUS_UPDATE', self._handle_remote_status_update)
                 self.peer_connection.register_command_handler('PROGRESS_UPDATE', self._handle_remote_progress_update)
-                self.peer_connection.register_command_handler('HISTOGRAM_DATA', self._handle_remote_histogram_data)
+                self.peer_connection.register_command_handler('STREAMING_START', self._handle_remote_streaming_start)
+                self.peer_connection.register_command_handler('STREAMING_STOP', self._handle_remote_streaming_stop)
+                self.peer_connection.register_command_handler('TIMESTAMP_BATCH', self._handle_remote_timestamp_batch)
                 self.peer_connection.register_command_handler('COUNTER_DATA', self._handle_remote_counter_data)
                 
                 # Start connection (server listens, client connects)
@@ -234,14 +241,43 @@ class App:
         if remote_row_idx in self.optim_rows:
             self.optim_rows[remote_row_idx].handle_remote_progress(data)
     
-    def _handle_remote_histogram_data(self, data: dict):
-        """Handle histogram data received from remote peer."""
+    def _handle_remote_timestamp_batch(self, data: dict):
+        """Handle timestamp batch received from remote peer.
+        
+        This receives batches of timestamps from the remote site
+        and passes them to the plot updater for coincidence calculation.
+        """
         try:
-            self.remote_histograms = data.get('histograms', {})
-            # Convert string keys back to integers
-            self.remote_histograms = {int(k): v for k, v in self.remote_histograms.items()}
+            import base64
+            import zlib
+            
+            if not isinstance(data, dict) or 'timestamps' not in data:
+                logger.warning("Invalid timestamp batch format")
+                return
+            
+            timestamps = data['timestamps']
+            total_received = 0
+            
+            # Add timestamps to remote buffers
+            for channel_str, ts_data in timestamps.items():
+                channel = int(channel_str)
+                if channel in [1, 2, 3, 4] and isinstance(ts_data, dict):
+                    # Decompress binary timestamp data
+                    encoded = ts_data.get('data', '')
+                    count = ts_data.get('count', 0)
+                    
+                    if encoded and count > 0:
+                        # Decode base64 -> decompress -> convert to numpy array
+                        compressed = base64.b64decode(encoded)
+                        binary = zlib.decompress(compressed)
+                        ts_array = np.frombuffer(binary, dtype=np.uint64)
+                        
+                        self.plot_updater.remote_buffers[channel].add_timestamps_array(ts_array)
+                        total_received += len(ts_array)
+            
+            logger.debug(f"Received timestamp batch: {total_received} total timestamps")
         except Exception as e:
-            logger.error("Error handling remote histogram data: %s", e)
+            logger.error(f"Error handling remote timestamp batch: {e}")
     
     def _handle_remote_counter_data(self, data: dict):
         """Handle detector counter data received from remote peer."""
@@ -251,6 +287,54 @@ class App:
                 self.remote_beutes_szamok = counters
         except Exception as e:
             logger.error("Error handling remote counter data: %s", e)
+    
+    def _handle_remote_streaming_start(self, data: dict):
+        """Handle streaming start command from remote peer."""
+        logger.info("Received STREAMING_START command from peer - starting local streaming")
+        if hasattr(self, 'plot_updater') and self.plot_updater:
+            # Start local streaming when peer requests it
+            self.plot_updater.start()
+    
+    def _handle_remote_streaming_stop(self, data: dict):
+        """Handle streaming stop command from remote peer."""
+        logger.info("Received STREAMING_STOP command from peer - stopping local streaming")
+        if hasattr(self, 'plot_updater') and self.plot_updater:
+            # Stop local streaming when peer requests it
+            self.plot_updater.stop()
+    
+    def _on_start_streaming(self):
+        """Start streaming on both local and remote sites."""
+        logger.info("Starting synchronized streaming on both sites")
+        
+        # Start local streaming
+        if hasattr(self, 'plot_updater') and self.plot_updater:
+            self.plot_updater.start()
+        
+        # Send command to peer to start streaming
+        if self.peer_connection and self.peer_connection.is_connected():
+            try:
+                self.peer_connection.send_command('STREAMING_START', {})
+                logger.info("Sent STREAMING_START command to peer")
+            except Exception as e:
+                logger.error(f"Failed to send STREAMING_START to peer: {e}")
+        else:
+            logger.warning("No peer connection - streaming locally only")
+    
+    def _on_stop_streaming(self):
+        """Stop streaming on both local and remote sites."""
+        logger.info("Stopping synchronized streaming on both sites")
+        
+        # Stop local streaming
+        if hasattr(self, 'plot_updater') and self.plot_updater:
+            self.plot_updater.stop()
+        
+        # Send command to peer to stop streaming
+        if self.peer_connection and self.peer_connection.is_connected():
+            try:
+                self.peer_connection.send_command('STREAMING_STOP', {})
+                logger.info("Sent STREAMING_STOP command to peer")
+            except Exception as e:
+                logger.error(f"Failed to send STREAMING_STOP to peer: {e}")
     
     def _setup_layout(self):
         """Configure root window layout."""
@@ -386,13 +470,13 @@ class App:
         
         btn_start = tk.Button(
             controls, text="Start", background=self.action_color, width=15,
-            command=self.plot_updater.start
+            command=self._on_start_streaming
         )
         btn_start.grid(row=0, column=1, sticky="news", padx=2)
         
         btn_stop = tk.Button(
             controls, text="Stop", background=self.action_color, width=15,
-            command=self.plot_updater.stop
+            command=self._on_stop_streaming
         )
         btn_stop.grid(row=0, column=2, sticky="news")
         
@@ -582,7 +666,7 @@ class App:
         local_counters = tk.Frame(self.tab_plot, relief=tk.GROOVE, bd=2, width=300, background='#E8F5E9')
         local_counters.grid(row=1, column=0, sticky="nws", pady=5, padx=(5, 2))
         
-        role_label = "Client" if self.computer_role == "computer_b" else "Server"
+        role_label = "BME" if self.computer_role == "computer_b" else "Wigner"
         tk.Label(local_counters, text=f"🟢 LOCAL Detektorok beütésszámai ({role_label})", 
                 font=('Arial', 10, 'bold'), foreground='#2E7D32',
                 background='#E8F5E9', width=25, height=2).grid(
@@ -601,7 +685,7 @@ class App:
             remote_counters = tk.Frame(self.tab_plot, relief=tk.GROOVE, bd=2, width=300, background='#E3F2FD')
             remote_counters.grid(row=1, column=1, sticky="nws", pady=5, padx=(2, 5))
             
-            remote_role = "Server" if self.computer_role == "computer_b" else "Client"
+            remote_role = "Wigner" if self.computer_role == "computer_b" else "BME"
             tk.Label(remote_counters, text=f"🔵 REMOTE Detektorok beütésszámai ({remote_role})", 
                     font=('Arial', 10, 'bold'), foreground='#1565C0',
                     background='#E3F2FD', width=25, height=2).grid(

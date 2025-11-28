@@ -1,49 +1,147 @@
 """
 Mock Time Controller for testing and fallback when real hardware is unavailable.
-Returns random values between 20000 and 100000 to simulate real measurements.
+⚠️ THIS IS A MOCK - NOT REAL HARDWARE! ⚠️
+Simulates Time Controller timestamp streaming for local testing.
 """
 import random
 import numpy as np
 import logging
+import struct
+import time
 
 logger = logging.getLogger(__name__)
 
 
 class MockTimeController:
     """
-    Mock time controller that simulates a real time controller
-    Returns random numbers to simulate real measurements when hardware is unavailable
+    Mock time controller that simulates IDQ Time Controller (ID900/ID1000)
+    ⚠️ THIS IS A MOCK - SIMULATED DATA ONLY! ⚠️
+    
+    Simulates:
+    - Timestamp streaming with picosecond precision
+    - 4-channel photon detection
+    - Realistic quantum correlations (for entangled pairs)
+    - Reference second counter
     """
     def __init__(self):
-        print("⚠️ Using MockTimeController - returning random values between 20000 and 100000")
-        logger.warning("MockTimeController initialized - using simulated data")
+        print("╔═══════════════════════════════════════════════════════════╗")
+        print("║   ⚠️  MOCK TIME CONTROLLER - SIMULATED DATA ONLY ⚠️      ║")
+        print("║   NOT REAL HARDWARE - FOR TESTING PURPOSES               ║")
+        print("╚═══════════════════════════════════════════════════════════╝")
+        logger.warning("MockTimeController initialized - using SIMULATED data")
+        
         self._is_mock = True
-        # Simulate some internal state for more realistic behavior
-        self._base_values = [random.randint(40000, 80000) for _ in range(4)]
+        self._base_seed = random.randint(0, 1000000)
+        
+        # Simulation parameters
+        self._detection_rate = 50000  # 50 kHz per channel (singles)
+        self._coincidence_rate = 1000  # 1 kHz (coincidences between channels)
+        self._reference_second = 0  # Current GPS reference second
+        self._start_time = time.time()
+        
+        # Detector counts (cumulative)
+        self._counter_values = [random.randint(40000, 80000) for _ in range(4)]
+    
+    def generate_timestamps(self, channel: int, duration_ps: int, with_ref_index: bool = True):
+        """Generate mock timestamp data for a channel.
+        
+        Args:
+            channel: Channel number (1-4)
+            duration_ps: Acquisition duration in picoseconds
+            with_ref_index: Include reference second counter
+            
+        Returns:
+            Binary timestamp data (uint64 pairs if with_ref_index, else uint64 only)
+        """
+        logger.debug(f"⚠️ MOCK: Generating timestamps for channel {channel}, duration={duration_ps}ps")
+        
+        # Calculate how many timestamps to generate
+        duration_sec = duration_ps / 1e12
+        num_timestamps = int(self._detection_rate * duration_sec)
+        
+        # Add some randomness to make it realistic
+        num_timestamps = max(1, int(num_timestamps * random.uniform(0.8, 1.2)))
+        
+        timestamps = []
+        
+        # Generate timestamps with realistic distribution
+        # Use current wall-clock time so both sites generate timestamps in same time range
+        current_time_ps = int(time.time() * 1e12)  # Current time in picoseconds
+        
+        # Seed with channel for reproducibility per channel
+        rng = np.random.RandomState(self._base_seed + channel + self._reference_second)
+        
+        for i in range(num_timestamps):
+            # Random offset within the duration (use int64 for large values)
+            offset_ps = int(rng.randint(0, int(duration_ps), dtype=np.int64))
+            ps_in_second = (current_time_ps + offset_ps) % int(1e12)
+            
+            # For channels 1&2, add some correlated timestamps (simulated entanglement)
+            if channel in [1, 2] and rng.random() < 0.05:  # 5% coincidence probability
+                # Add timestamp at roughly same time as partner channel
+                correlation_offset = rng.randint(-1000, 1000)  # ±1ns jitter
+                ps_in_second = max(0, min(int(1e12) - 1, ps_in_second + correlation_offset))
+            
+            # Same for channels 3&4
+            if channel in [3, 4] and rng.random() < 0.05:
+                correlation_offset = rng.randint(-1000, 1000)
+                ps_in_second = max(0, min(int(1e12) - 1, ps_in_second + correlation_offset))
+            
+            if with_ref_index:
+                # Format: [picoseconds_in_second, reference_second_counter]
+                timestamps.append((ps_in_second, self._reference_second))
+            else:
+                timestamps.append(ps_in_second)
+        
+        # Sort timestamps (chronological order)
+        if with_ref_index:
+            timestamps.sort(key=lambda x: x[0])
+        else:
+            timestamps.sort()
+        
+        # Convert to binary format (matches Time Controller format)
+        if with_ref_index:
+            # dtype: [('timestamp', uint64), ('refIndex', uint64)]
+            binary_data = b''.join(struct.pack('<QQ', ts, ref) for ts, ref in timestamps)
+        else:
+            # dtype: uint64
+            binary_data = b''.join(struct.pack('<Q', ts) for ts in timestamps)
+        
+        logger.debug(f"⚠️ MOCK: Generated {len(timestamps)} timestamps, {len(binary_data)} bytes")
+        return binary_data
     
     def send_string(self, command: str) -> None:
-        """Mock send_string method (does nothing)"""
-        logger.debug(f"Mock send_string: {command}")
+        """Mock send_string method - simulates SCPI commands."""
+        logger.debug(f"⚠️ MOCK send_string: {command}")
+        
+        # Simulate some state changes
+        if "REC:PLAY" in command:
+            self._reference_second += 1  # Increment reference second on each acquisition
         pass
     
     def recv_string(self) -> str:
-        """Mock recv_string - returns random counter value"""
-        value = random.randint(20000, 100000)
-        logger.debug(f"Mock recv_string: {value}")
+        """Mock recv_string - returns simulated counter values."""
+        # Increment counters to simulate ongoing photon detection
+        for i in range(4):
+            self._counter_values[i] += random.randint(100, 500)
+        
+        value = random.choice(self._counter_values)
+        logger.debug(f"⚠️ MOCK recv_string: {value}")
         return str(value)
     
     def __getattr__(self, name):
-        """Return a callable that returns random numbers for any method call"""
+        """Return a callable for any unmocked method."""
         def mock_method(*args, **kwargs):
+            logger.debug(f"⚠️ MOCK method called: {name}(*{args}, **{kwargs})")
             # Return realistic random values with some variation
-            if name in ['send_string', 'recv_string']:
+            if 'counter' in name.lower() or 'count' in name.lower():
                 return random.randint(20000, 100000)
-            return random.randint(20000, 100000)
+            return None
         return mock_method
     
     def close(self, *args, **kwargs):
         """Mock close method"""
-        logger.debug("Mock close called")
+        logger.debug("⚠️ MOCK close called")
         pass
 
 

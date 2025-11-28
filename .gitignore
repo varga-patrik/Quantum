@@ -138,4 +138,4 @@ cpp/Correlator/rawdata
 data
 
 # Local configuration files (site-specific)
-*/time_offset_config.json
+time_offset_config.json
