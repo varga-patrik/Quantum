@@ -46,10 +46,10 @@ HISTOGRAM_LABELS = ['1-3', '1-4', '2-3', '2-4']
 
 # Default device serials for local optimizer rows (serial, channel)
 DEFAULT_LOCAL_SERIALS = [
-    ("38442764", 1),
-    ("00000000", 2),
+    ("00000000", 1),
+    ("38290024", 2),
     ("00000000", 3),
-    ("38290024", 4)
+    ("38442764", 4)
 ]
 
 # Default device serials for remote optimizer rows (serial, channel)

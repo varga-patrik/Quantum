@@ -127,6 +127,7 @@ int main(int argc, char **argv)
     char recvbuf[DEFAULT_BUFLEN];
     int iResult;
     int recvbuflen = DEFAULT_BUFLEN;
+    bool manual_mode = false;
 
     //kapcsolat felepitese a gps oraval, output stringhez nem tartozik erdemi funkcio, azt korabban tesztelesre hasznaltam
     std::string ip_text = "172.26.34.159";
@@ -137,9 +138,12 @@ int main(int argc, char **argv)
     getcwd(pathbuffer, 1024);
     
     // Validate the parameters
-    if (argc != 2) {
-        printf("usage: %s server-name\n", argv[0]);
+    if (argc < 2 || argc > 3) {
+        printf("usage: %s server-name [manual]\n", argv[0]);
         return 1;
+    }
+    if (argc == 3 && std::string(argv[2]) == "manual") {
+        manual_mode = true;
     }
 
     // Initialize Winsock
@@ -218,7 +222,13 @@ int main(int argc, char **argv)
         while(!fs.is_same_str(sendbuf.c_str(), "exit")){
 
             std::ostringstream path;
-            sendbuf = orchstrator.runNextStep();
+            if(manual_mode){
+                std::cout << "Enter command: ";
+                std::getline(std::cin, sendbuf);
+            }
+            else {
+                sendbuf = orchstrator.runNextStep();
+            }
 
             //setup parancs elokesziti a muszereket a meresre
             if(fs.is_same_str(sendbuf.c_str(), "setup")){
@@ -226,6 +236,11 @@ int main(int argc, char **argv)
                 path.clear();
                 path << "\"" << pathbuffer << "\\timetagger_setup.py\"";
                 fs.run(path.str());
+            }
+
+            if(fs.is_same_str(sendbuf.c_str(), "start")){
+                sendbuf += " ";
+                sendbuf += fs.start_time();
             }
 
             iResult = send( ConnectSocket, sendbuf.c_str(), DEFAULT_BUFLEN, 0 );
@@ -261,6 +276,17 @@ int main(int argc, char **argv)
                     // This must be the first chunk of a file - pass it to the receiver
                     readReceivingFile(ConnectSocket, buffer, messageSize);
                 }
+            }
+
+            else if(sendbuf.find("start") != std::string::npos){
+                std::istringstream iss(sendbuf);
+                std::string command, startTimeStr;
+                iss >> command >> startTimeStr;
+
+                fs.wait_until(startTimeStr.c_str());
+
+                path << "\"" << pathbuffer << "\\timestamps_acquisition_bme.py\"";
+                fs.run(path.str());
             }
 
             //ez a meres, a program megvarja a kezdes idopontjat es lefuttatja a merest

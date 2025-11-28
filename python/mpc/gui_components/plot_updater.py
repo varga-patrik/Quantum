@@ -80,7 +80,7 @@ class PlotUpdater:
 
     def start_streaming(self, tc_address: str, is_mock: bool = False):
         """
-        Start timestamp streaming from Time Controller.
+        Start timestamp streaming from Time Controller via DLT service.
         
         Args:
             tc_address: Time Controller IP address
@@ -92,24 +92,170 @@ class PlotUpdater:
         
         logger.info(f"Starting timestamp streaming from {tc_address} (mock={is_mock})")
         
-        # Create stream client
+        # Start DLT acquisitions (if not mock)
+        self.acquisition_ids = {}
+        if not is_mock:
+            from utils.common import zmq_exec, dlt_exec
+            from pathlib import Path
+            import time as time_module
+            
+            # Get DLT connection from app_ref
+            dlt = getattr(self.app_ref, 'dlt', None) if self.app_ref else None
+            if not dlt:
+                logger.error("DLT service not connected - cannot start streaming")
+                return
+            
+            # Close any active acquisitions first
+            try:
+                active_acquisitions = dlt_exec(dlt, "list")
+                if active_acquisitions:
+                    logger.info(f"Found {len(active_acquisitions)} active acquisitions, closing them...")
+                    for acq_id in active_acquisitions:
+                        dlt_exec(dlt, f"stop --id {acq_id}")
+                        logger.info(f"Closed acquisition {acq_id}")
+            except Exception as e:
+                logger.warning(f"Error checking/closing active acquisitions: {e}")
+            
+            # Start DLT acquisitions for each channel
+            output_dir = Path.home() / "Documents" / "AgodSolt" / "data"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            
+            for channel in [1, 2, 3, 4]:
+                try:
+                    # Clear any previous errors
+                    zmq_exec(self.tc, f"RAW{channel}:ERRORS:CLEAR")
+                    
+                    # Create filename for this acquisition
+                    timestr = time_module.strftime("%Y%m%d_%H%M%S")
+                    filepath = output_dir / f"timestamps_live_ch{channel}_{timestr}.bin"
+                    filepath_escaped = str(filepath).replace("\\", "\\\\")
+                    
+                    # Tell DLT to start saving timestamps (also creates streaming endpoint)
+                    command = f'start-save --address {tc_address} --channel {channel} --filename "{filepath_escaped}" --format bin --with-ref-index'
+                    logger.info(f"Sending DLT command: {command}")
+                    answer = dlt_exec(dlt, command)
+                    logger.info(f"DLT response: {answer}")
+                    acq_id = answer["id"]
+                    
+                    # Parse acquisition ID to get streaming port
+                    # Format is "address:port" like "169.254.104.112:5556"
+                    if ':' in acq_id:
+                        stream_port = int(acq_id.split(':')[1])
+                        self.acquisition_ids[channel] = {'id': acq_id, 'port': stream_port}
+                        logger.info(f"Started DLT acquisition for channel {channel}, ID: {acq_id}, port: {stream_port}, file: {filepath}")
+                    else:
+                        self.acquisition_ids[channel] = {'id': acq_id, 'port': None}
+                        logger.warning(f"Could not parse port from acquisition ID: {acq_id}")
+                    
+                    # Enable timestamp transmission from Time Controller
+                    # Check if already enabled first
+                    try:
+                        send_status = zmq_exec(self.tc, f"RAW{channel}:SEND?")
+                        if send_status.strip().upper() != "ON":
+                            zmq_exec(self.tc, f"RAW{channel}:SEND ON")
+                            send_status = zmq_exec(self.tc, f"RAW{channel}:SEND?")
+                        logger.info(f"RAW{channel}:SEND status: {send_status}")
+                    except Exception as e:
+                        logger.error(f"Error enabling RAW{channel}:SEND: {e}")
+                        raise  # Re-raise to be caught by outer exception handler
+                    
+                    # Check for errors
+                    time_module.sleep(0.1)  # Brief delay to let any errors accumulate
+                    error_count = zmq_exec(self.tc, f"RAW{channel}:ERRORS?")
+                    logger.info(f"Channel {channel} error count: {error_count}")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to start DLT acquisition for channel {channel}: {e}")
+                    # Continue with other channels even if one fails
+            
+            # Start the Time Controller acquisition (REC:PLAY)
+            # This tells the TC to actually start generating and sending timestamps
+            try:
+                rec_stage = zmq_exec(self.tc, "REC:STAGe?")
+                logger.info(f"REC stage before PLAY: {rec_stage}")
+                
+                if rec_stage.strip().upper() != "PLAYING":
+                    zmq_exec(self.tc, "REC:PLAY")
+                    rec_stage_after = zmq_exec(self.tc, "REC:STAGe?")
+                    logger.info(f"Started Time Controller recording - REC stage: {rec_stage_after}")
+                else:
+                    logger.info("Time Controller already in PLAYING state")
+            except Exception as e:
+                logger.error(f"Failed to start Time Controller recording: {e}")
+                # Try to continue anyway - streaming might still work
+        
+        # Check DLT acquisition status
+        if not is_mock:
+            time_module.sleep(0.5)  # Wait a bit for data to start flowing
+            try:
+                dlt_status = dlt_exec(dlt, "list")
+                logger.info(f"Active DLT acquisitions: {dlt_status}")
+                
+                # Check status of each acquisition
+                for channel, acq_info in self.acquisition_ids.items():
+                    acq_id = acq_info['id']
+                    status = dlt_exec(dlt, f"status --id {acq_id}")
+                    logger.info(f"DLT acquisition {acq_id} status: {status}")
+            except Exception as e:
+                logger.warning(f"Could not check DLT status: {e}")
+        
+        # Create stream client connected to Time Controller's native streaming ports
+        # TC streams on ports 4242-4245 (STREAM_PORTS_BASE + channel)
+        # Note: DLT handles file saving separately; for live GUI streaming we connect directly to TC
         self.stream_client = TimeControllerStreamClient(tc_address, is_mock=is_mock)
         
         # Start streams for each channel with callback
+        # Don't use DLT acquisition ports - those are for DLT's internal use
+        # Use None for port to let StreamClient use default TC streaming ports (4242-4245)
         for channel in [1, 2, 3, 4]:
             callback = lambda data, ch=channel: self._on_timestamp_batch(ch, data)
-            self.stream_client.start_stream(channel, callback)
+            self.stream_client.start_stream(channel, callback, port=None)
         
         self.streaming_active = True
         logger.info("Timestamp streaming started for all channels")
     
     def stop_streaming(self):
-        """Stop timestamp streaming."""
+        """Stop timestamp streaming and DLT acquisitions."""
         if not self.streaming_active or self.stream_client is None:
             return
         
         logger.info("Stopping timestamp streaming")
+        
+        # Stop stream clients first
         self.stream_client.stop_all_streams()
+        
+        # Stop DLT acquisitions (if not mock)
+        if not self.stream_client.is_mock and hasattr(self, 'acquisition_ids'):
+            from utils.common import zmq_exec, dlt_exec
+            
+            # Get DLT connection from app_ref
+            dlt = getattr(self.app_ref, 'dlt', None) if self.app_ref else None
+            
+            if dlt:
+                # Stop DLT acquisitions
+                for channel, acq_info in self.acquisition_ids.items():
+                    try:
+                        acq_id = acq_info['id'] if isinstance(acq_info, dict) else acq_info
+                        status = dlt_exec(dlt, f"stop --id {acq_id}")
+                        logger.info(f"Stopped DLT acquisition for channel {channel}")
+                    except Exception as e:
+                        logger.error(f"Error stopping DLT acquisition for channel {channel}: {e}")
+                
+                # Stop Time Controller recording
+                try:
+                    zmq_exec(self.tc, "REC:STOP")
+                    logger.info("Stopped Time Controller recording (REC:STOP)")
+                except Exception as e:
+                    logger.error(f"Failed to stop TC recording: {e}")
+                
+                # Disable RAW streaming on Time Controller
+                for channel in self.acquisition_ids.keys():
+                    try:
+                        zmq_exec(self.tc, f"RAW{channel}:SEND OFF")
+                        logger.info(f"Disabled RAW{channel}:SEND on Time Controller")
+                    except Exception as e:
+                        logger.error(f"Failed to disable streaming on channel {channel}: {e}")
+        
         self.streaming_active = False
     
     def _on_timestamp_batch(self, channel: int, binary_data: bytes):
@@ -121,14 +267,16 @@ class PlotUpdater:
             binary_data: Binary timestamp data (uint64 pairs)
         """
         try:
-            # Add timestamps to buffer
-            self.local_buffers[channel].add_timestamps(binary_data, with_ref_index=True)
-            
-            logger.debug(f"Ch{channel}: Received {len(binary_data)} bytes, "
-                        f"buffer size now {len(self.local_buffers[channel])}")
+            if len(binary_data) > 0:
+                logger.info(f"Ch{channel}: Received {len(binary_data)} bytes from stream")
+                # Add timestamps to buffer
+                self.local_buffers[channel].add_timestamps(binary_data, with_ref_index=True)
+                logger.info(f"Ch{channel}: Buffer size now {len(self.local_buffers[channel])}")
+            else:
+                logger.warning(f"Ch{channel}: Received empty data packet")
                 
         except Exception as e:
-            logger.error(f"Error processing timestamp batch for channel {channel}: {e}")
+            logger.error(f"Error processing timestamp batch for channel {channel}: {e}", exc_info=True)
     
     def _send_timestamp_batch_to_peer(self):
         """Send local timestamp batches to peer for cross-site correlation."""
@@ -371,7 +519,15 @@ class PlotUpdater:
         # Start timestamp streaming from Time Controller
         # Determine if we should use mock mode (check if TC is MockTimeController)
         is_mock = hasattr(self.tc, '_base_seed')  # Mock has _base_seed attribute
-        tc_address = "localhost" if is_mock else getattr(self.tc, 'address', 'localhost')
+        
+        # Get the actual TC address from app_ref (main GUI)
+        if is_mock:
+            tc_address = "localhost"
+        elif self.app_ref and hasattr(self.app_ref, 'tc_address'):
+            tc_address = self.app_ref.tc_address
+        else:
+            print("error happened in plot updater while getting tc address, defaulting to localhost")
+            tc_address = "localhost"
         
         logger.info(f"Starting timestamp streaming with mock={is_mock}, address={tc_address}")
         self.start_streaming(tc_address, is_mock=is_mock)

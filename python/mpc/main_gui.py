@@ -186,22 +186,34 @@ class App:
             logger.error("Failed to save time offset configuration: %s", e)
     
     def _connect_time_controller(self):
-        """Connect to Time Controller with fallback to mock."""
-        from utils.common import connect, adjust_bin_width
+        """Connect to Time Controller and DLT service with fallback to mock."""
+        from utils.common import connect, dlt_connect, adjust_bin_width
+        from pathlib import Path
         
         # Use configured address based on computer role
         tc_addr = getattr(self, 'tc_address', DEFAULT_TC_ADDRESS)
         
         tc = None
+        dlt = None
         try:
+            # Connect to Time Controller
             tc = connect(tc_addr)
             self.bin_width = adjust_bin_width(tc, DEFAULT_BIN_WIDTH)
             logger.info("Connected to Time Controller at %s", tc_addr)
+            
+            # Connect to DataLink Target service for streaming
+            output_dir = Path.home() / "Documents" / "AgodSolt" / "data"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            dlt = dlt_connect(output_dir)
+            logger.info("Connected to DLT service at localhost:6060")
+            self.dlt = dlt
+            
         except (ConnectionError, Exception) as e:
-            logger.warning("Failed to connect to Time Controller: %s", e)
+            logger.warning("Failed to connect to Time Controller/DLT: %s", e)
             logger.info("Using MockTimeController")
             tc = MockTimeController()
             self.bin_width = DEFAULT_BIN_WIDTH
+            self.dlt = None
         
         return tc
 
@@ -299,8 +311,8 @@ class App:
         """Handle streaming stop command from remote peer."""
         logger.info("Received STREAMING_STOP command from peer - stopping local streaming")
         if hasattr(self, 'plot_updater') and self.plot_updater:
-            # Stop local streaming when peer requests it
-            self.plot_updater.stop()
+            # Stop local streaming when peer requests it (but keep counter display running)
+            self.plot_updater.stop_streaming()
     
     def _on_start_streaming(self):
         """Start streaming on both local and remote sites."""
@@ -324,9 +336,9 @@ class App:
         """Stop streaming on both local and remote sites."""
         logger.info("Stopping synchronized streaming on both sites")
         
-        # Stop local streaming
+        # Stop local streaming (but keep counter display running)
         if hasattr(self, 'plot_updater') and self.plot_updater:
-            self.plot_updater.stop()
+            self.plot_updater.stop_streaming()
         
         # Send command to peer to stop streaming
         if self.peer_connection and self.peer_connection.is_connected():

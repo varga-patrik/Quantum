@@ -39,13 +39,14 @@ class TimeControllerStreamClient:
         else:
             logger.info(f"TimeControllerStreamClient initialized for {tc_address}")
     
-    def start_stream(self, channel: int, callback: Callable[[bytes], None]):
+    def start_stream(self, channel: int, callback: Callable[[bytes], None], port: int = None):
         """
         Start streaming timestamps from a channel.
         
         Args:
             channel: Channel number (1-4)
             callback: Function to call with binary timestamp data
+            port: Optional custom port number (from DLT acquisition ID)
         """
         if channel in self.stream_threads and self.stream_threads[channel].is_alive():
             logger.warning(f"Stream already running for channel {channel}")
@@ -55,45 +56,42 @@ class TimeControllerStreamClient:
             logger.warning(f"⚠️ MOCK: Starting simulated stream for channel {channel}")
             self._start_mock_stream(channel, callback)
         else:
-            self._start_real_stream(channel, callback)
+            self._start_real_stream(channel, callback, port)
     
-    def _start_real_stream(self, channel: int, callback: Callable[[bytes], None]):
+    def _start_real_stream(self, channel: int, callback: Callable[[bytes], None], port: int = None):
         """Start real Time Controller stream."""
         try:
-            # Import here to avoid dependency issues if library not installed
-            from idqlibrary.samplecode.timestamps_acquisition_stream import StreamClient
+            # Use the existing StreamClient from utils.acquisitions
+            from utils.acquisitions import StreamClient
             
-            port = STREAM_PORTS_BASE + channel  # 4242, 4243, 4244, 4245
+            # DLT returns the streaming port in the acquisition ID (e.g., "169.254.104.112:5556")
+            # Use that port if provided, otherwise fall back to default TC streaming ports
+            if port is None:
+                from gui_components.config import STREAM_PORTS_BASE
+                port = STREAM_PORTS_BASE + channel
+                logger.info(f"Using default TC streaming port {port} for channel {channel}")
             
-            def stream_worker():
-                logger.info(f"Starting stream on {self.tc_address}:{port} for channel {channel}")
-                
-                client = StreamClient(
-                    self.tc_address,
-                    port,
-                    message_callback=callback
-                )
-                
-                self.stream_clients[channel] = client
-                self.running[channel] = True
-                
-                try:
-                    # Start receiving (blocks until stopped)
-                    client.start()
-                except Exception as e:
-                    logger.error(f"Stream error on channel {channel}: {e}")
-                finally:
-                    self.running[channel] = False
+            addr = f"tcp://{self.tc_address}:{port}"
             
-            thread = threading.Thread(target=stream_worker, daemon=True, name=f"Stream-Ch{channel}")
-            self.stream_threads[channel] = thread
-            thread.start()
+            logger.info(f"Starting stream on {addr} for channel {channel}")
             
-            logger.info(f"Stream thread started for channel {channel}")
+            # Create stream client
+            client = StreamClient(addr)
+            client.message_callback = callback
+            
+            self.stream_clients[channel] = client
+            self.running[channel] = True
+            
+            # Start the client thread
+            client.start()
+            
+            logger.info(f"Stream started for channel {channel}")
             
         except ImportError as e:
             logger.error(f"Failed to import StreamClient: {e}")
-            logger.error("Make sure IDQ Time Controller library is installed")
+            logger.error("Make sure utils.acquisitions module is available")
+        except Exception as e:
+            logger.error(f"Failed to start stream for channel {channel}: {e}")
     
     def _start_mock_stream(self, channel: int, callback: Callable[[bytes], None]):
         """Start mock stream for testing."""
@@ -148,14 +146,14 @@ class TimeControllerStreamClient:
         self.running[channel] = False
         
         if not self.is_mock and channel in self.stream_clients:
-            # Stop the real StreamClient
+            # Stop the real StreamClient (calls join() internally)
             try:
-                self.stream_clients[channel].stop()
+                self.stream_clients[channel].join()
             except Exception as e:
                 logger.error(f"Error stopping StreamClient for channel {channel}: {e}")
         
-        # Wait for thread to finish (with timeout)
-        if channel in self.stream_threads:
+        # For mock mode, wait for thread to finish (with timeout)
+        if self.is_mock and channel in self.stream_threads:
             self.stream_threads[channel].join(timeout=2.0)
             
             if self.stream_threads[channel].is_alive():
