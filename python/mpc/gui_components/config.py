@@ -2,7 +2,7 @@
 
 # Hardware IP addresses for SERVER side (Wigner)
 SERVER_TC_ADDRESS = "148.6.27.28"
-SERVER_FS740_ADDRESS = "172.26.34.159"
+SERVER_FS740_ADDRESS = "148.6.27.165"
 
 # Hardware IP addresses for CLIENT side (BME)
 CLIENT_TC_ADDRESS = "169.254.104.112"
@@ -18,6 +18,13 @@ DEFAULT_ACQ_DURATION = 0.5
 DEFAULT_BIN_WIDTH = 100
 DEFAULT_BIN_COUNT = 20
 DEFAULT_HISTOGRAMS = [1, 2, 3, 4]
+
+# Timestamp streaming settings
+COINCIDENCE_WINDOW_PS = 1000  # ±1ns coincidence window in picoseconds (tau)
+TIMESTAMP_BUFFER_DURATION_SEC = 1.0  # Keep 1 second of timestamps in memory
+TIMESTAMP_BUFFER_MAX_SIZE = 10_000_000  # Max timestamps per channel (safety limit)
+TIMESTAMP_BATCH_INTERVAL_SEC = 0.5  # Send batches to peer every 0.5 seconds
+STREAM_PORTS_BASE = 4241  # Time Controller streaming ports: 4242, 4243, 4244, 4245
 
 # Theme colors
 BG_COLOR = '#1E1E1E'

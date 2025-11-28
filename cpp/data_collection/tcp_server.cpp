@@ -25,7 +25,7 @@
 #define DEFAULT_BUFLEN 512
 #define DEFAULT_PORT "27015"
 
-std::vector<std::string> uploadFiles(const std::string& folder, const std::string& condition) {
+std::vector<std::string> collectFiles(const std::string& folder, const std::string& condition) {
     std::vector<std::string> files;
 
     try {
@@ -317,7 +317,7 @@ int main(void)
                 }
 
                 if(fs.is_same_str(recvbuf, "read_data_file")){
-                    std::vector<std::string> files = uploadFiles("C:\\Users\\DR KIS\\Desktop\\vp\\Quantum\\data", "wigner");
+                    std::vector<std::string> files = collectFiles("./data", "bme");
                     for (const auto& file : files) {
                         sendFile(ClientSocket, file);
                     }

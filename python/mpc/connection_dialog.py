@@ -105,7 +105,7 @@ class ConnectionDialog:
         else:
             # Client mode: enter server IP (editable), connect to port
             self.server_ip_label.config(text="Server IP:")
-            self.server_ip_var.set("127.0.0.1")  # Default to localhost for testing
+            self.server_ip_var.set("148.6.27.16")  # Default to localhost for testing
             self.server_ip_entry.config(state='normal')
             self.server_ip_entry.focus()
             self.connect_btn.config(text="Connect")
@@ -176,11 +176,13 @@ class ConnectionDialog:
         self.dialog.destroy()
     
     def _on_skip(self):
-        """Handle Skip button click."""
+        """Handle Skip button click - save role for local hardware config."""
+        role = self.role_var.get()
         self.result = {
-            'enabled': False
+            'enabled': False,
+            'role': role  # Save role even when skipping for hardware address selection
         }
-        logger.info("Peer connection skipped")
+        logger.info("Peer connection skipped (local mode, role=%s)", role)
         self.dialog.destroy()
     
     def show(self):

@@ -1,0 +1,186 @@
+"""
+Time Controller streaming client integration.
+
+This module wraps the IDQ Time Controller StreamClient for receiving
+timestamp streams over ZMQ.
+"""
+
+import logging
+import threading
+from typing import Callable, Optional
+from gui_components.config import STREAM_PORTS_BASE
+
+logger = logging.getLogger(__name__)
+
+
+class TimeControllerStreamClient:
+    """
+    Manages streaming connections to Time Controller channels.
+    
+    Each channel (1-4) streams on its own port (4242-4245).
+    """
+    
+    def __init__(self, tc_address: str, is_mock: bool = False):
+        """
+        Initialize stream client.
+        
+        Args:
+            tc_address: Time Controller IP address
+            is_mock: If True, use mock streaming (for testing)
+        """
+        self.tc_address = tc_address
+        self.is_mock = is_mock
+        self.stream_threads = {}  # channel -> thread
+        self.stream_clients = {}  # channel -> StreamClient instance
+        self.running = {}  # channel -> bool
+        
+        if is_mock:
+            logger.warning("⚠️ MOCK STREAMING MODE - Using simulated timestamp streams")
+        else:
+            logger.info(f"TimeControllerStreamClient initialized for {tc_address}")
+    
+    def start_stream(self, channel: int, callback: Callable[[bytes], None]):
+        """
+        Start streaming timestamps from a channel.
+        
+        Args:
+            channel: Channel number (1-4)
+            callback: Function to call with binary timestamp data
+        """
+        if channel in self.stream_threads and self.stream_threads[channel].is_alive():
+            logger.warning(f"Stream already running for channel {channel}")
+            return
+        
+        if self.is_mock:
+            logger.warning(f"⚠️ MOCK: Starting simulated stream for channel {channel}")
+            self._start_mock_stream(channel, callback)
+        else:
+            self._start_real_stream(channel, callback)
+    
+    def _start_real_stream(self, channel: int, callback: Callable[[bytes], None]):
+        """Start real Time Controller stream."""
+        try:
+            # Import here to avoid dependency issues if library not installed
+            from idqlibrary.samplecode.timestamps_acquisition_stream import StreamClient
+            
+            port = STREAM_PORTS_BASE + channel  # 4242, 4243, 4244, 4245
+            
+            def stream_worker():
+                logger.info(f"Starting stream on {self.tc_address}:{port} for channel {channel}")
+                
+                client = StreamClient(
+                    self.tc_address,
+                    port,
+                    message_callback=callback
+                )
+                
+                self.stream_clients[channel] = client
+                self.running[channel] = True
+                
+                try:
+                    # Start receiving (blocks until stopped)
+                    client.start()
+                except Exception as e:
+                    logger.error(f"Stream error on channel {channel}: {e}")
+                finally:
+                    self.running[channel] = False
+            
+            thread = threading.Thread(target=stream_worker, daemon=True, name=f"Stream-Ch{channel}")
+            self.stream_threads[channel] = thread
+            thread.start()
+            
+            logger.info(f"Stream thread started for channel {channel}")
+            
+        except ImportError as e:
+            logger.error(f"Failed to import StreamClient: {e}")
+            logger.error("Make sure IDQ Time Controller library is installed")
+    
+    def _start_mock_stream(self, channel: int, callback: Callable[[bytes], None]):
+        """Start mock stream for testing."""
+        import time
+        import random
+        
+        def mock_stream_worker():
+            logger.warning(f"⚠️ MOCK stream worker started for channel {channel}")
+            self.running[channel] = True
+            
+            # Import here to avoid circular dependency
+            from mock_time_controller import MockTimeController
+            
+            mock_tc = MockTimeController()
+            
+            try:
+                while self.running.get(channel, False):
+                    # Generate 0.1 seconds worth of timestamps
+                    duration_ps = int(0.1 * 1e12)
+                    binary_data = mock_tc.generate_timestamps(channel, duration_ps, with_ref_index=True)
+                    
+                    # Call the callback with mock data
+                    callback(binary_data)
+                    
+                    # Wait before next batch (simulate 10 Hz batch rate)
+                    time.sleep(0.1)
+                    
+            except Exception as e:
+                logger.error(f"⚠️ MOCK stream error on channel {channel}: {e}")
+            finally:
+                logger.warning(f"⚠️ MOCK stream stopped for channel {channel}")
+                self.running[channel] = False
+        
+        thread = threading.Thread(target=mock_stream_worker, daemon=True, name=f"MockStream-Ch{channel}")
+        self.stream_threads[channel] = thread
+        thread.start()
+        
+        logger.warning(f"⚠️ MOCK stream thread started for channel {channel}")
+    
+    def stop_stream(self, channel: int):
+        """
+        Stop streaming from a channel.
+        
+        Args:
+            channel: Channel number (1-4)
+        """
+        if channel not in self.running or not self.running[channel]:
+            logger.debug(f"Stream not running for channel {channel}")
+            return
+        
+        logger.info(f"Stopping stream for channel {channel}")
+        self.running[channel] = False
+        
+        if not self.is_mock and channel in self.stream_clients:
+            # Stop the real StreamClient
+            try:
+                self.stream_clients[channel].stop()
+            except Exception as e:
+                logger.error(f"Error stopping StreamClient for channel {channel}: {e}")
+        
+        # Wait for thread to finish (with timeout)
+        if channel in self.stream_threads:
+            self.stream_threads[channel].join(timeout=2.0)
+            
+            if self.stream_threads[channel].is_alive():
+                logger.warning(f"Stream thread for channel {channel} did not stop cleanly")
+    
+    def stop_all_streams(self):
+        """Stop all active streams."""
+        logger.info("Stopping all streams")
+        
+        for channel in list(self.running.keys()):
+            if self.running[channel]:
+                self.stop_stream(channel)
+    
+    def is_streaming(self, channel: int) -> bool:
+        """
+        Check if a channel is currently streaming.
+        
+        Args:
+            channel: Channel number (1-4)
+        
+        Returns:
+            True if streaming, False otherwise
+        """
+        return self.running.get(channel, False)
+    
+    def __del__(self):
+        """Cleanup on deletion."""
+        self.stop_all_streams()

@@ -55,7 +55,7 @@ void WaitForCommandDone(SOCKET socket) {
     }
 }
 
-std::vector<std::string> uploadFiles(const std::string& folder, const std::string& condition) {
+std::vector<std::string> collectFiles(const std::string& folder, const std::string& condition) {
     std::vector<std::string> files;
 
     try {
@@ -228,11 +228,6 @@ int main(int argc, char **argv)
                 fs.run(path.str());
             }
 
-            if(fs.is_same_str(sendbuf.c_str(), "home")){
-                device_bme_2.home();
-                device_bme_4.home();
-            }
-
             iResult = send( ConnectSocket, sendbuf.c_str(), DEFAULT_BUFLEN, 0 );
 
             if (iResult == SOCKET_ERROR) {
@@ -243,10 +238,11 @@ int main(int argc, char **argv)
             }
 
             else if(sendbuf.find("read_data_file") != std::string::npos){
+                std::this_thread::sleep_for(std::chrono::seconds(2)); //wait for file to be ready
+
                 while (true) {
                     char header[3];
                     int headerResult = recvAll(ConnectSocket, header, 3);
-                    if (headerResult <= 0) break;
                     
                     int messageSize = ((unsigned char)header[0] << 16) |
                                     ((unsigned char)header[1] << 8) |
@@ -254,7 +250,6 @@ int main(int argc, char **argv)
                     
                     std::vector<char> buffer(messageSize);
                     int bodyResult = recvAll(ConnectSocket, buffer.data(), messageSize);
-                    if (bodyResult <= 0) break;
                     
                     // Check for EOT
                     std::string message(buffer.begin(), buffer.end());
@@ -286,7 +281,7 @@ int main(int argc, char **argv)
 
                         // Build Python command
                         std::ostringstream path;
-                        path << "\"" << pathbuffer << "\\timestamps_acquisition.py\""
+                        path << "\"" << pathbuffer << "\\timestamps_acquisition_bme.py\""
                             << " --duration " << std::fixed << std::setprecision(2) << durationSec;
 
                         // Run acquisition
@@ -309,7 +304,6 @@ int main(int argc, char **argv)
 
             //wait for "done"
             WaitForCommandDone(ConnectSocket);
-
         }
 
         device_bme_2.stopPolling();

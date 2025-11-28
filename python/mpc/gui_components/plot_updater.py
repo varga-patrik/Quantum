@@ -1,19 +1,27 @@
-"""Plot updater component for real-time measurement visualization."""
+"""Plot updater component for real-time timestamp streaming and coincidence measurement."""
 
 import threading
 import time
 import numpy as np
 import random
 import logging
+from typing import Optional
 
-from mock_time_controller import safe_zmq_exec, safe_acquire_histograms
-from utils.plot import filter_histogram_bins
+from mock_time_controller import safe_zmq_exec
+from utils.timestamp_stream import TimestampBuffer, CoincidenceCounter
+from utils.stream_client import TimeControllerStreamClient
+from gui_components.config import (
+    COINCIDENCE_WINDOW_PS,
+    TIMESTAMP_BUFFER_DURATION_SEC,
+    TIMESTAMP_BUFFER_MAX_SIZE,
+    TIMESTAMP_BATCH_INTERVAL_SEC
+)
 
 logger = logging.getLogger(__name__)
 
 
 class PlotUpdater:
-    """Manages real-time plot updates with histogram and correlation data."""
+    """Manages real-time plot updates with timestamp streaming and coincidence counting."""
     
     def __init__(self, fig, ax, canvas, tc, default_acq_duration, bin_width, 
                  default_bin_count, default_histograms, peer_connection=None, app_ref=None):
@@ -30,119 +38,243 @@ class PlotUpdater:
         self.continue_update = False
         self.thread = None
 
+        # Display mode
         self.plot_histogram = False
         self.normalize_plot = False
         
-        # Peer connection for cross-site correlation
+        # Peer connection for cross-site data exchange
         self.peer_connection = peer_connection
-        self.app_ref = app_ref  # Reference to main app for accessing correlation pairs
-
-        # State exposed for other panels
-        self.histograms = {}
-        self.correlation_series = np.zeros((8, 20))  # Expanded to 8 for cross-site pairs
-        self.last_correlation = [0, 0, 0, 0, 0, 0, 0, 0]
+        self.app_ref = app_ref  # Reference to main app
+        
+        # Timestamp buffers (circular buffers for each channel)
+        self.local_buffers = {
+            1: TimestampBuffer(1, TIMESTAMP_BUFFER_DURATION_SEC, TIMESTAMP_BUFFER_MAX_SIZE),
+            2: TimestampBuffer(2, TIMESTAMP_BUFFER_DURATION_SEC, TIMESTAMP_BUFFER_MAX_SIZE),
+            3: TimestampBuffer(3, TIMESTAMP_BUFFER_DURATION_SEC, TIMESTAMP_BUFFER_MAX_SIZE),
+            4: TimestampBuffer(4, TIMESTAMP_BUFFER_DURATION_SEC, TIMESTAMP_BUFFER_MAX_SIZE)
+        }
+        self.remote_buffers = {
+            1: TimestampBuffer(1, TIMESTAMP_BUFFER_DURATION_SEC, TIMESTAMP_BUFFER_MAX_SIZE),
+            2: TimestampBuffer(2, TIMESTAMP_BUFFER_DURATION_SEC, TIMESTAMP_BUFFER_MAX_SIZE),
+            3: TimestampBuffer(3, TIMESTAMP_BUFFER_DURATION_SEC, TIMESTAMP_BUFFER_MAX_SIZE),
+            4: TimestampBuffer(4, TIMESTAMP_BUFFER_DURATION_SEC, TIMESTAMP_BUFFER_MAX_SIZE)
+        }
+        
+        # Coincidence counter
+        self.coincidence_counter = CoincidenceCounter(window_ps=COINCIDENCE_WINDOW_PS)
+        
+        # Coincidence counts (cross-site pairs only)
+        # Pairs: (1,1), (2,2), (3,3), (4,4) 
+        self.coincidence_series = np.zeros((4, 20))  # 4 pairs, 20 time points
+        self.last_coincidence_counts = [0, 0, 0, 0]
+        
+        # Detector single counts (for display only)
         self.beutes_szamok = [0, 0, 0, 0]
+        
+        # Stream client (will be initialized when streaming starts)
+        self.stream_client: Optional[TimeControllerStreamClient] = None
+        self.streaming_active = False
+        
+        # Batch sending for peer exchange
+        self.last_batch_send_time = time.time()
 
+    def start_streaming(self, tc_address: str, is_mock: bool = False):
+        """
+        Start timestamp streaming from Time Controller.
+        
+        Args:
+            tc_address: Time Controller IP address
+            is_mock: Use mock streaming for testing
+        """
+        if self.streaming_active:
+            logger.warning("Streaming already active")
+            return
+        
+        logger.info(f"Starting timestamp streaming from {tc_address} (mock={is_mock})")
+        
+        # Create stream client
+        self.stream_client = TimeControllerStreamClient(tc_address, is_mock=is_mock)
+        
+        # Start streams for each channel with callback
+        for channel in [1, 2, 3, 4]:
+            callback = lambda data, ch=channel: self._on_timestamp_batch(ch, data)
+            self.stream_client.start_stream(channel, callback)
+        
+        self.streaming_active = True
+        logger.info("Timestamp streaming started for all channels")
+    
+    def stop_streaming(self):
+        """Stop timestamp streaming."""
+        if not self.streaming_active or self.stream_client is None:
+            return
+        
+        logger.info("Stopping timestamp streaming")
+        self.stream_client.stop_all_streams()
+        self.streaming_active = False
+    
+    def _on_timestamp_batch(self, channel: int, binary_data: bytes):
+        """
+        Callback for receiving timestamp batch from stream.
+        
+        Args:
+            channel: Channel number (1-4)
+            binary_data: Binary timestamp data (uint64 pairs)
+        """
+        try:
+            # Add timestamps to buffer
+            self.local_buffers[channel].add_timestamps(binary_data, with_ref_index=True)
+            
+            logger.debug(f"Ch{channel}: Received {len(binary_data)} bytes, "
+                        f"buffer size now {len(self.local_buffers[channel])}")
+                
+        except Exception as e:
+            logger.error(f"Error processing timestamp batch for channel {channel}: {e}")
+    
+    def _send_timestamp_batch_to_peer(self):
+        """Send local timestamp batches to peer for cross-site correlation."""
+        if self.peer_connection is None or not self.peer_connection.is_connected():
+            return
+        
+        try:
+            import base64
+            import zlib
+            
+            # Limit: only send most recent timestamps (last 100ms worth, ~5000 per channel)
+            # This is enough for coincidence detection while keeping network load manageable
+            MAX_TIMESTAMPS_PER_CHANNEL = 5000
+            
+            # Collect timestamps from all channels as compressed binary
+            batch_data = {}
+            total_ts = 0
+            for channel in [1, 2, 3, 4]:
+                timestamps = self.local_buffers[channel].get_timestamps()
+                if len(timestamps) > 0:
+                    # Only send the most recent N timestamps
+                    recent = timestamps[-MAX_TIMESTAMPS_PER_CHANNEL:] if len(timestamps) > MAX_TIMESTAMPS_PER_CHANNEL else timestamps
+                    
+                    # Convert to binary (much more efficient than JSON)
+                    binary = recent.tobytes()
+                    # Compress to reduce network load
+                    compressed = zlib.compress(binary, level=1)  # Fast compression
+                    # Encode as base64 for JSON transport
+                    encoded = base64.b64encode(compressed).decode('ascii')
+                    batch_data[channel] = {
+                        'data': encoded,
+                        'count': len(recent)
+                    }
+                    total_ts += len(recent)
+            
+            if batch_data and total_ts > 0:
+                # Send timestamp batch to peer
+                success = self.peer_connection.send_command('TIMESTAMP_BATCH', {
+                    'timestamps': batch_data,
+                    'time': time.time()
+                })
+                if success:
+                    logger.debug(f"Sent timestamp batch: {total_ts} total timestamps")
+        except Exception as e:
+            logger.warning(f"Could not send timestamp batch to peer: {e}")
+    
     def _update_measurements(self):
-        """Acquire histograms and update correlation data."""
-        from utils.acquisitions import acquire_histograms
+        """Update coincidence counts from timestamp buffers."""
         from utils.common import zmq_exec
         
-        # Acquire histograms
-        self.histograms = safe_acquire_histograms(
-            self.tc, self.default_acq_duration, self.bin_width, 
-            self.default_bin_count, self.default_histograms, acquire_histograms
-        )
-
-        # Update correlation rolling window (sum of each histogram) - first 4 are local
-        for i, (_, histogram) in enumerate(self.histograms.items()):
-            if i < 4:
-                self.correlation_series[i, 0:19] = self.correlation_series[i, 1:20]
-                try:
-                    self.correlation_series[i, 19] = int(np.sum(histogram))
-                except Exception:
-                    self.correlation_series[i, 19] = 0
-
-        # Last correlation snapshot for local
-        for i in range(4):
-            self.last_correlation[i] = int(self.correlation_series[i, 19])
-        
-        # Send histogram data to peer if connected
-        if self.peer_connection and self.peer_connection.is_connected():
-            try:
-                # Convert histograms to JSON-serializable format
-                hist_data = {str(k): [int(x) for x in v] for k, v in self.histograms.items()}
-                self.peer_connection.send_command('HISTOGRAM_DATA', {'histograms': hist_data})
-            except Exception as e:
-                logger.error(f"Failed to send histogram data: {e}")
-        
-        # Calculate cross-site correlations if we have remote data
-        self._update_cross_site_correlations()
-
-        # Live counters from TC
+        # Live counters from TC (singles rates display only)
         for j in range(1, 5):
             try:
                 self.beutes_szamok[j - 1] = int(safe_zmq_exec(self.tc, f"INPUt{j}:COUNter?", zmq_exec))
             except Exception:
                 self.beutes_szamok[j - 1] = random.randint(20000, 100000)
-    
-    def _update_cross_site_correlations(self):
-        """Calculate cross-site correlations for selected pairs."""
-        if not self.app_ref or not hasattr(self.app_ref, 'correlation_pairs'):
-            logger.debug("No app_ref or correlation_pairs")
-            return
         
-        # Check if peer is still connected - if not, clear remote data and zero correlations
-        if not self.peer_connection or not self.peer_connection.is_connected():
-            logger.debug("Peer not connected - clearing cross-site correlations")
-            if hasattr(self.app_ref, 'remote_histograms'):
-                self.app_ref.remote_histograms = {}
-            # Zero out cross-site correlation values (indices 4-7)
-            for pair_idx in range(4, 8):
-                self.correlation_series[pair_idx, :] = 0
-                self.last_correlation[pair_idx] = 0
-            return
-        
-        if not hasattr(self.app_ref, 'remote_histograms') or not self.app_ref.remote_histograms:
-            logger.debug(f"No remote histograms (has_attr={hasattr(self.app_ref, 'remote_histograms')}, empty={not self.app_ref.remote_histograms if hasattr(self.app_ref, 'remote_histograms') else 'N/A'})")
-            return
-        
-        # Get correlation pairs from app
-        pairs = self.app_ref.correlation_pairs
-        logger.debug(f"Updating cross-site correlations for {len(pairs)} pairs, remote keys: {list(self.app_ref.remote_histograms.keys())}")
-        
-        # Calculate correlation for each pair (stored in indices 4-7)
-        for idx, (local_in, remote_in) in enumerate(pairs[:4]):  # Max 4 pairs for now
-            pair_idx = 4 + idx
-            self.correlation_series[pair_idx, 0:19] = self.correlation_series[pair_idx, 1:20]
+        # Calculate coincidences from timestamp buffers
+        if self.streaming_active:
+            self._calculate_coincidences()
             
-            try:
-                # Get local and remote histograms for this pair
-                local_hist = self.histograms.get(local_in, [])
-                remote_hist = self.app_ref.remote_histograms.get(remote_in, [])
-                
-                if len(local_hist) > 0 and len(remote_hist) > 0:
-                    # Cross-correlation: sum of products of coincident bins
-                    min_len = min(len(local_hist), len(remote_hist))
-                    correlation = sum(local_hist[i] * remote_hist[i] for i in range(min_len))
-                    self.correlation_series[pair_idx, 19] = int(correlation)
-                    self.last_correlation[pair_idx] = int(correlation)
-                    logger.debug(f"  Pair {idx} ({local_in}↔{remote_in}): corr={correlation}, local_len={len(local_hist)}, remote_len={len(remote_hist)}")
-                else:
-                    self.correlation_series[pair_idx, 19] = 0
-                    self.last_correlation[pair_idx] = 0
-                    logger.debug(f"  Pair {idx} ({local_in}↔{remote_in}): NO DATA (local={len(local_hist)}, remote={len(remote_hist)})")
-            except Exception as e:
-                logger.error(f"  Pair {idx}: ERROR {e}")
-                self.correlation_series[pair_idx, 19] = 0
-                self.last_correlation[pair_idx] = 0
-
-    def _draw_correlation_plot(self):
-        """Draw correlation time series plot."""
-        from .config import CORRELATION_COLORS, CORRELATION_LABELS
+            # Send timestamp batches to peer at regular intervals
+            current_time = time.time()
+            if current_time - self.last_batch_send_time >= TIMESTAMP_BATCH_INTERVAL_SEC:
+                self._send_timestamp_batch_to_peer()
+                self.last_batch_send_time = current_time
+        else:
+            # Not streaming yet, show placeholder
+            pass
         
-        data = self.correlation_series.copy()
-        ylim = int(max(1, np.max(data)) / 5000) * 5000 + 5000
+        # Send counter data to peer if connected
+        if self.peer_connection and self.peer_connection.is_connected():
+            try:
+                self.peer_connection.send_command('COUNTER_DATA', {'counters': self.beutes_szamok})
+            except Exception as e:
+                logger.error(f"Failed to send counter data to peer: {e}")
+    
+    def _calculate_coincidences(self):
+        """Calculate coincidences between local and remote timestamps.
+        
+        Uses the CoincidenceCounter to find timestamp pairs within the
+        configured coincidence window (±1ns by default).
+        """
+        if not self.app_ref or not hasattr(self.app_ref, 'correlation_pairs'):
+            return
+        
+        # Get time offset from config (measured by C++ Correlator)
+        time_offset_ps = getattr(self.app_ref, 'time_offset_ps', 0) or 0
+        
+        # Get correlation pairs: [(local_ch, remote_ch), ...]
+        pairs = self.app_ref.correlation_pairs
+        
+        # DEBUG: Log buffer sizes
+        local_sizes = [len(self.local_buffers[ch].get_timestamps()) for ch in [1,2,3,4]]
+        remote_sizes = [len(self.remote_buffers[ch].get_timestamps()) for ch in [1,2,3,4]]
+        logger.info(f"Buffer sizes - Local: {local_sizes}, Remote: {remote_sizes}")
+        
+        # Calculate coincidences for each pair
+        new_counts = []
+        for local_ch, remote_ch in pairs:
+            local_ts = self.local_buffers[local_ch].get_timestamps()
+            remote_ts = self.remote_buffers[remote_ch].get_timestamps()
+            
+            logger.info(f"Pair ({local_ch},{remote_ch}): local={len(local_ts)}, remote={len(remote_ts)}")
+            
+            count = self.coincidence_counter.count_coincidences(
+                local_ts, remote_ts, time_offset_ps
+            )
+            logger.info(f"Pair ({local_ch},{remote_ch}): count={count}")
+            new_counts.append(count)
+        
+        # Update rolling window (shift left, add new value on right)
+        for i, count in enumerate(new_counts):
+            if i < len(self.coincidence_series):
+                self.coincidence_series[i] = np.roll(self.coincidence_series[i], -1)
+                self.coincidence_series[i, -1] = count
+                self.last_coincidence_counts[i] = count
+    
+    def _clear_cross_site_data(self):
+        """Clear cross-site data when peer disconnects."""
+        logger.debug("Peer disconnected - clearing cross-site data")
+        for channel in [1, 2, 3, 4]:
+            self.remote_buffers[channel].clear()
+        self.coincidence_series[:, :] = 0
+        self.last_coincidence_counts = [0, 0, 0, 0]
+
+    def _draw_coincidence_plot(self):
+        """Draw cross-site coincidence time series plot.
+        
+        Only plots meaningful correlations: cross-site coincidences.
+        Single-site correlations are meaningless for entanglement.
+        """
+        if not self.app_ref or not hasattr(self.app_ref, 'correlation_pairs'):
+            self.ax.text(0.5, 0.5, 'No correlation pairs configured', 
+                        ha='center', va='center', transform=self.ax.transAxes)
+            return
+        
+        # Check if peer is connected
+        if not self.peer_connection or not self.peer_connection.is_connected():
+            self._clear_cross_site_data()
+            self.ax.text(0.5, 0.5, 'Peer not connected - no cross-site data', 
+                        ha='center', va='center', transform=self.ax.transAxes)
+            return
+        
+        data = self.coincidence_series.copy()
+        ylim = int(max(1, np.max(data)) / 100) * 100 + 100
         
         if self.normalize_plot:
             col_sum = np.sum(data, axis=0)
@@ -150,68 +282,56 @@ class PlotUpdater:
                 data = np.nan_to_num(data / col_sum, nan=0.0, posinf=0.0, neginf=0.0)
             ylim = 1
         
-        # Draw local correlations (first 4)
-        for i in range(4):
-            self.ax.plot(data[i], color=CORRELATION_COLORS[i], marker='o', 
-                        linestyle='', label=CORRELATION_LABELS[i])
+        # Plot colors for up to 4 pairs
+        colors = ['purple', 'orange', 'brown', 'pink']
         
-        # Draw cross-site correlations (indices 4-7) if peer connected
-        if self.app_ref and hasattr(self.app_ref, 'correlation_pairs') and self.app_ref.correlation_pairs:
-            cross_colors = ['purple', 'orange', 'brown', 'pink']
-            logger.debug(f"Drawing cross-site correlations for {len(self.app_ref.correlation_pairs)} pairs")
-            for idx, (local_in, remote_in) in enumerate(self.app_ref.correlation_pairs[:4]):
-                pair_idx = 4 + idx
-                role_label = "Client" if self.app_ref.computer_role == "computer_b" else "Server"
-                remote_role = "Server" if self.app_ref.computer_role == "computer_b" else "Client"
-                label = f"{role_label}-{local_in}↔{remote_role}-{remote_in}"
-                logger.debug(f"  Pair {idx}: {label}, data range: {data[pair_idx].min():.0f}-{data[pair_idx].max():.0f}")
-                self.ax.plot(data[pair_idx], color=cross_colors[idx], marker='x', 
-                            linestyle='--', label=label)
-        else:
-            logger.debug(f"NOT drawing cross-site: app_ref={self.app_ref is not None}, "
-                        f"has_pairs={hasattr(self.app_ref, 'correlation_pairs') if self.app_ref else False}, "
-                        f"pairs_count={len(self.app_ref.correlation_pairs) if self.app_ref and hasattr(self.app_ref, 'correlation_pairs') else 0}")
+        pairs = self.app_ref.correlation_pairs[:4]  # Max 4 pairs
+        role_label = "Client" if self.app_ref.computer_role == "computer_b" else "Server"
+        remote_role = "Server" if self.app_ref.computer_role == "computer_b" else "Client"
         
-        self.ax.legend(loc='upper left', fontsize=8)
-        self.ax.set_ylim([0, ylim])
-        self.ax.set_yticks(np.linspace(0, ylim, 11))
-        self.ax.set_title('Koincidencia mérés (Local + Cross-Site)')
-        self.ax.set_xlabel('Adat')
-        self.ax.set_ylabel('Beütések')
+        for idx, (local_in, remote_in) in enumerate(pairs):
+            label = f"{role_label}-{local_in} ↔ {remote_role}-{remote_in}"
+            self.ax.plot(data[idx], color=colors[idx], marker='o', 
+                        linestyle='-', linewidth=2, label=label)
+        
+        self.ax.legend(loc='upper left', fontsize=10)
+        self.ax.set_ylim([-10, 10])  # Fixed range for better visibility of small changes
+        self.ax.set_title('Cross-Site Coincidence Counts (Quantum Correlations)', fontsize=12, fontweight='bold')
+        self.ax.set_xlabel('Time Point')
+        self.ax.set_ylabel('Coincidences')
         self.ax.set_xticks(range(0, 20))
+        self.ax.grid(True, alpha=0.3)
 
-    def _draw_histogram_plot(self):
-        """Draw correlation histograms."""
-        from .config import HISTOGRAM_COLORS, HISTOGRAM_LABELS
-        
-        try:
-            max_bin_count = max(len(h) for h in self.histograms.values())
-        except Exception:
-            max_bin_count = 5000
-        
-        self.ax.set(xlabel="ps", ylabel="Darab")
-        self.ax.set_xlim(0, max_bin_count * self.bin_width)
-        
-        for idx, (hist_title, histogram) in enumerate(self.histograms.items()):
-            title = f"Histogram {hist_title}" if isinstance(hist_title, int) else hist_title
-            bins = filter_histogram_bins(histogram, self.bin_width)
-            xp, yp = tuple(bins.keys()), tuple(bins.values())
-            self.ax.bar(xp, yp, align="edge", width=self.bin_width, alpha=0.1)
-            self.ax.step(xp, yp, color=HISTOGRAM_COLORS[idx % len(HISTOGRAM_COLORS)], 
-                        where="post", label=title, alpha=1)
-        
-        self.ax.legend(HISTOGRAM_LABELS)
-        self.ax.set_xticks(range(0, max_bin_count * self.bin_width + 1, 200))
-        self.ax.set_title('Korrelációs hisztogrammok')
+    def _draw_placeholder_plot(self):
+        """Placeholder plot while streaming is not yet implemented."""
+        self.ax.text(0.5, 0.5, 
+                    'Timestamp Streaming Not Yet Implemented\n\n'
+                    'Next Steps:\n'
+                    '1. Implement timestamp streaming from Time Controller\n'
+                    '2. Exchange timestamp batches between sites\n'
+                    '3. Calculate coincidences with picosecond precision\n'
+                    '4. Plot cross-site coincidence rates',
+                    ha='center', va='center', transform=self.ax.transAxes,
+                    fontsize=11, bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
 
     def _draw_plot(self):
         """Update the plot based on current mode."""
         self.ax.clear()
 
+        # Draw coincidence plot (or placeholder if not streaming yet)
         if not self.plot_histogram:
-            self._draw_correlation_plot()
+            if self.streaming_active:
+                self._draw_coincidence_plot()
+            else:
+                # Show message when not streaming
+                self.ax.text(0.5, 0.5, 
+                            'Timestamp Streaming Not Started\n\n'
+                            'Click "Start Streaming" to begin real-time coincidence counting',
+                            ha='center', va='center', transform=self.ax.transAxes,
+                            fontsize=12, bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.5))
         else:
-            self._draw_histogram_plot()
+            # Could show timestamp rate histogram or other diagnostic plots
+            self._draw_placeholder_plot()
 
         self.canvas.draw()
 
@@ -220,20 +340,53 @@ class PlotUpdater:
         while self.continue_update:
             self._update_measurements()
             self._draw_plot()
-            time.sleep(0.1)
+            time.sleep(0.5)  # Update every 0.5 seconds (fast enough for human perception)
 
-    def start(self):
-        """Start the background update thread."""
+    def start_counter_display(self):
+        """Start only the counter display loop (singles rates monitoring).
+        
+        This does NOT start timestamp streaming or coincidence calculations.
+        Use start() to begin full correlation measurements.
+        """
         if self.continue_update:
+            logger.debug("Counter display already running")
             return
+        
+        # Start the plot update loop (will show counters only, no streaming)
         self.continue_update = True
         self.thread = threading.Thread(target=self._loop, daemon=True)
         self.thread.start()
+        logger.info("Counter display started (streaming not active)")
+    
+    def start(self):
+        """Start the full measurement: timestamp streaming + coincidence calculations."""
+        if self.streaming_active:
+            logger.warning("Streaming already active")
+            return
+        
+        # Start counter display if not already running
+        if not self.continue_update:
+            self.start_counter_display()
+        
+        # Start timestamp streaming from Time Controller
+        # Determine if we should use mock mode (check if TC is MockTimeController)
+        is_mock = hasattr(self.tc, '_base_seed')  # Mock has _base_seed attribute
+        tc_address = "localhost" if is_mock else getattr(self.tc, 'address', 'localhost')
+        
+        logger.info(f"Starting timestamp streaming with mock={is_mock}, address={tc_address}")
+        self.start_streaming(tc_address, is_mock=is_mock)
+        logger.info("Full correlation measurement started")
 
     def stop(self):
-        """Stop the background update thread."""
+        """Stop the background update thread and timestamp streaming."""
         if not self.continue_update:
             return
+        
+        # Stop timestamp streaming
+        self.stop_streaming()
+        
+        # Stop the plot update loop
         self.continue_update = False
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=2)
+        logger.info("PlotUpdater stopped")
