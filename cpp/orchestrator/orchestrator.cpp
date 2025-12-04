@@ -278,7 +278,7 @@ void Orchestrator::analyzeCoincidences() {
         return;
     }
     
-    std::cout << "[Orchestrator] Found " << clientFiles.size() << " client files and " << serverFiles.size() << " server files" << std::endl;
+    //std::cout << "[Orchestrator] Found " << clientFiles.size() << " client files and " << serverFiles.size() << " server files" << std::endl;
     
     size_t numPairs = std::min(clientFiles.size(), serverFiles.size());
     for (size_t i = 0; i < numPairs; ++i) {
