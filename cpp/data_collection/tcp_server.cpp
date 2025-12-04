@@ -208,7 +208,7 @@ int main(void)
     //kapcsolat felepitese a gps oraval, output stringhez nem tartozik erdemi funkcio, azt korabban tesztelesre hasznaltam
     std::string ip_text = "148.6.27.165";
     std::string output = "diff_data.csv";
-    FSUtil fs(5, ip_text, output);
+    FSUtil fs(6000, ip_text, output);
 
     char pathbuffer[1024];
     getcwd(pathbuffer, 1024);

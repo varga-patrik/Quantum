@@ -4,9 +4,10 @@
 #include <cstdint>
 #include <fstream>
 #include <iostream>
-#include <vector>
 #include <algorithm>
 #include <filesystem>
+#include <sstream>
+#include <iomanip>
 #include "fs_util.h"
 #include "KinesisUtil.h"
 #include "Correlator.h"
@@ -17,105 +18,124 @@ enum class OrchestratorStep {
     MeasureFullPhase,
     ReadData,
     AnalyzeData,
-    FindMinVisibility,
+    RotateToMinVis,
     AdjustQWP,
-    FineScan,
-    CheckImprovement,
+    MeasureWithQWP,
+    AnalyzeQWPData,
+    ProcessQWPResults,
+    CheckConvergence,
     Exit
 };
 
-const std::string FullPhaseCollectionTime = "23";
-const std::string FinePhaseCollectionTime = "5";
+enum class MeasurementType {
+    FullPhase,
+    FineScan
+};
+
+const std::string FULL_PHASE_DURATION = "30";
+const std::string FINE_SCAN_DURATION = "5";
+const double FULL_PHASE_ROTATION_SPEED = 180.0 / 30;  // 6.0 deg/sec
+const double FINE_SCAN_ROTATION_SPEED = 20.0 / 5.0;     // 4.0 deg/sec (±10° range)
 
 class Orchestrator {
 private:
     // Instruments
-    FSUtil fs;                       // GPS clock utility
-    KinesisUtil lambda2_client;      // Client λ/2 rotator
-    double lambda2_server;      // Server λ/2 rotator
-    KinesisUtil lambda4_client;      // Client λ/4 rotator
-    double lambda4_server;      // Server λ/4 rotator
-    Correlator correlator;           // Correlation calculator
+    FSUtil& fs;
+    KinesisUtil& lambda2_client;
+    double lambda2_server;
+    KinesisUtil& lambda4_client;
+    double lambda4_server;
+    Correlator& correlator;
 
-    // Internal state
-    OrchestratorStep currentStep;                   // Keeps track of current step
-    std::string dataFolder;          // Folder containing timestamp data
+    // State tracking
+    OrchestratorStep currentStep;
+    std::string dataFolder;
 
-    // Parameters
-    double degreeStep;               // e.g. 5° bins
-    std::vector<uint64_t> coincidences;
-    double improvementThreshold;
-
-    // For QWP optimization
-    int qwpOptSideIndex = 0;           // 0 = client, 1 = server
-    double qwpCurrentAngle[2] = {0.0, 0.0};
-    double qwpCoarseStep = 2.0;
-    double qwpCoarseRange = 10.0;
-    double qwpFineStep = 0.5;
-    double qwpFineRange = 2.0;
-    bool qwpImproved = true;
-    bool qwpAwaitingFineScan = false;   // set after issuing QWP rotation, expect fine-scan next
-    bool qwpAwaitingResult = false;     // set after issuing QWP rotation, expect a result after analyze
-    int qwpPhase = 0;                  // 0 = coarse scan, 1 = fine scan
-    int qwpTestIndex = 0;              // index of current angle in scan
-    std::vector<double> qwpTestAngles; // temporary storage for angles to try
-    double qwpBestVisibility = 0.0;
-    double qwpMinImprovement = 0.001;  // min improvement to accept
-
+    // Measurement parameters
+    double degreeStep;                          // Bin size in degrees (e.g., 5°)
+    size_t numAngleBins;                        // Number of bins (e.g., 36 for 180°/5°)
+    MeasurementType lastMeasurementType;        // What kind of measurement we just did
+    std::string lastMeasurementStartTime;       // GPS time string when measurement started
+    int64_t lastMeasurementStartTimePico;       // Converted to picoseconds
+    
+    // Analysis results
+    std::vector<uint64_t> coincidenceBins;      // Coincidence counts per angle bin
+    uint64_t totalCoincidences;                 // Total coincidences found
+    int64_t stationTimeOffset;                  // Time offset between stations (picoseconds)
+    
+    // Visibility tracking
+    double currentVisibility;                   // Most recent visibility measurement
+    double previousVisibility;                  // Previous full-phase visibility
+    double visibilityThreshold;                 // Minimum change to continue optimizing
+    
+    // QWP optimization state
+    int qwpSideIndex;                           // 0 = client (bme4), 1 = server (wigner4)
+    double qwpCurrentAngle[2];                  // Current angles for [client, server]
+    int qwpPhase;                               // 0 = coarse scan, 1 = fine scan
+    int qwpTestIndex;                           // Current index in qwpTestAngles
+    std::vector<double> qwpTestAngles;          // Angles to test in current scan
+    std::vector<double> qwpTestVisibilities;    // Visibility for each tested angle
+    double qwpBestVisibility;                   // Best visibility found in current scan
+    double qwpBestAngle;                        // Angle that gave best visibility
+    bool qwpImprovedLastScan;                   // Whether last scan improved visibility
+    
+    // QWP scan parameters
+    const double QWP_COARSE_STEP = 2.0;         // Coarse scan step size (degrees)
+    const double QWP_COARSE_RANGE = 10.0;       // Coarse scan range (±degrees)
+    const double QWP_FINE_STEP = 0.5;           // Fine scan step size (degrees)
+    const double QWP_FINE_RANGE = 2.0;          // Fine scan range (±degrees)
+    const double QWP_MIN_IMPROVEMENT = 0.001;   // Minimum visibility improvement to continue
 
 public:
     Orchestrator(
-        const FSUtil& fsu,
-        const KinesisUtil& l2c,
-        const double& l2s,
-        const KinesisUtil& l4c,
-        const double& l4s,
-        const Correlator& corr,
+        FSUtil& fsu,
+        KinesisUtil& l2c,
+        double l2s,
+        KinesisUtil& l4c,
+        double l4s,
+        Correlator& corr,
         const std::string& dataFolderPath,
         double stepDeg
-    ) :
-        fs(fsu),
-        lambda2_client(l2c),
-        lambda2_server(l2s),
-        lambda4_client(l4c),
-        lambda4_server(l4s),
-        correlator(corr),
-        currentStep(OrchestratorStep::HomeAll),
-        dataFolder(dataFolderPath),
-        degreeStep(stepDeg),
-        coincidences(),
-        improvementThreshold(0.0),
-        qwpOptSideIndex(0),
-        qwpCurrentAngle{0.0, 0.0},
-        qwpCoarseStep(2.0),
-        qwpCoarseRange(10.0),
-        qwpFineStep(0.5),
-        qwpFineRange(2.0),
-        qwpImproved(true),
-        qwpPhase(0),
-        qwpTestIndex(0),
-        qwpTestAngles(),
-        qwpBestVisibility(0.0),
-        qwpMinImprovement(0.001)
-    {
-    }
+    );
 
-    // Main control
-    std::string runNextStep();       // Called by TCP client loop
+    // Main control loop - called repeatedly by TCP client
+    std::string runNextStep();
+    
+    // Getters for status monitoring
+    double getCurrentVisibility() const { return currentVisibility; }
+    OrchestratorStep getCurrentStep() const { return currentStep; }
+    const std::vector<uint64_t>& getCoincidenceBins() const { return coincidenceBins; }
 
 private:
-    // Step actions
-    std::string homeAll();
-
-    // Data analysis
-    void analyzeData(); // Read, bin, and return coincidences
-    void clearDataFolder();              // Delete all old data files
+    // Step implementations
+    std::string stepHomeAll();
+    std::string stepSetup();
+    std::string stepMeasureFullPhase();
+    std::string stepReadData();
+    std::string stepAnalyzeData();
+    std::string stepFindMinVisibility();
+    std::string stepRotateToMinVis();
+    std::string stepAdjustQWP();
+    std::string stepMeasureWithQWP();
+    std::string stepAnalyzeQWPData();
+    std::string stepProcessQWPResults();
+    std::string stepCheckConvergence();
+    
+    // Data analysis helpers
+    void analyzeCoincidences();
     std::vector<std::string> collectDataFiles(const std::string& condition);
-    std::vector<double> loadTimestamps(const std::filesystem::path& filepath);
-    std::vector<double> calculateCoincidences(
-        const std::vector<double>& clientTimestamps,
-        const std::vector<double>& serverTimestamps,
-        double toleranceNs);
+    std::vector<int64_t> loadTimestampsFromFile(const std::filesystem::path& filepath);
+    void binCoincidencesByAngle(
+        const std::vector<int64_t>& coincidenceTimestamps,
+        double rotationSpeed
+    );
+    std::vector<int64_t> findCoincidences(
+        const std::vector<int64_t>& clientTimestamps,
+        const std::vector<int64_t>& serverTimestamps,
+        int64_t tolerancePico
+    );
+    
+    // Visibility and optimization
     double computeVisibility() const;
     void prepareQWPScan(bool fine);
     std::string runQWPOptimizationStep();
