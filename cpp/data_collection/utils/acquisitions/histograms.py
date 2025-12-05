@@ -6,8 +6,7 @@ from utils.common import zmq_exec
 def wait_end_of_acquisition(tc):
     # Wait while RECord is playing
     while zmq_exec(tc, "REC:STAGe?").upper() == "PLAYING":
-        #time.sleep(1)
-        None
+        time.sleep(1)
 
 
 def acquire_histograms(tc, duration: int, bwid: int, bcount: int, hist_numbers: Iterable[int]) -> Dict[int, List[int]]:
@@ -36,7 +35,7 @@ def acquire_histograms(tc, duration: int, bwid: int, bcount: int, hist_numbers: 
 
     # Get histogram data
     histograms = {i: eval(zmq_exec(tc, f"HIST{i}:DATA?")) for i in hist_numbers}
- 
+
     return histograms
 
 

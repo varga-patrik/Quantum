@@ -8,7 +8,6 @@ import subprocess
 from pathlib import Path
 import __main__
 
-
 DLT_PORT = 6060
 SCPI_PORT = 5555
 DEFAULT_DLT_PATH = Path("C:/Program Files/IDQ/Time Controller/packages/ScpiClient")
