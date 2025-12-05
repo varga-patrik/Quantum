@@ -24,7 +24,7 @@ DEFAULT_DLT_PATH = Path("C:/Program Files/IDQ/Time Controller/packages/ScpiClien
 DEFAULT_TC_ADDRESS = "172.26.34.114"
 
 # Default acquisition duration in seconds
-DEFAULT_ACQUISITION_DURATION = 5
+DEFAULT_ACQUISITION_DURATION = 15
 
 # Default location where timestamps files are saved
 DEFAULT_OUTPUT_PATH = Path("C:\\Users\\MCL\\Documents\\VargaPatrik\\Quantum\\data")

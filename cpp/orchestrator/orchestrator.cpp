@@ -415,7 +415,7 @@ double Orchestrator::computeVisibility() const {
     return (C_max - C_min) / (C_max + C_min);
 }
 
-size_t Orchestrator::findMinVisibilityBin() const {
+size_t Orchestrator::findMinVisibilityBin() {
     if (coincidenceBins.empty()) {
         return 0;
     }
@@ -440,15 +440,15 @@ void Orchestrator::initializeQWPScan(bool fineScan) {
     //std::cout << "[Orchestrator] QWP scan: " << qwpTestAngles.size() << " angles from " << (currentAngle - range) << "° to " << (currentAngle + range) << "°" << std::endl;
 }
 
-bool Orchestrator::isQWPScanComplete() const {
+bool Orchestrator::isQWPScanComplete() {
     return qwpTestIndex >= qwpTestAngles.size();
 }
 
-bool Orchestrator::areBothQWPSidesOptimized() const {
+bool Orchestrator::areBothQWPSidesOptimized() {
     return (qwpSideIndex == 1 && qwpPhase == 1 && !qwpImprovedLastScan);
 }
 
-std::string Orchestrator::getQWPDeviceName() const {
+std::string Orchestrator::getQWPDeviceName() {
     return (qwpSideIndex == 0) ? "bme4" : "wigner4";
 }
 
@@ -568,12 +568,12 @@ int64_t Orchestrator::parseGPSTime(const std::string& gpsTimeStr) {
     return totalPico;
 }
 
-double Orchestrator::getRotationSpeed(MeasurementType type) const {
+double Orchestrator::getRotationSpeed(MeasurementType type) {
     return (type == MeasurementType::FullPhase) ? 
            FULL_PHASE_ROTATION_SPEED : FINE_SCAN_ROTATION_SPEED;
 }
 
-bool Orchestrator::hasConverged() const {
+bool Orchestrator::hasConverged() {
     double change = std::abs(currentVisibility - previousVisibility);
     
     //std::cout << "[Orchestrator] Convergence check: current=" << currentVisibility << ", previous=" << previousVisibility << ", change=" << change << ", threshold=" << visibilityThreshold << std::endl;

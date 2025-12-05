@@ -139,19 +139,16 @@ private:
     double computeVisibility() const;
     void prepareQWPScan(bool fine);
     std::string runQWPOptimizationStep();
+    void advanceQWPOptimization();
     std::string rotateToMinVis();
+    int64_t parseGPSTime(const std::string& gpsTimeStr);
+    void clearDataFolder();
     bool hasConverged();
-    bool isCurrentSideOptimized() 
-    {
-        return (qwpPhase == 1 && qwpImproved == false);
-    }
-
-    bool areBothSidesOptimized() 
-    {
-        if (qwpOptSideIndex == 1 && isCurrentSideOptimized())
-            return true;
-
-        return false;
-    }
-
+    size_t findMinVisibilityBin();
+    bool isQWPScanComplete();
+    void initializeQWPScan(bool fineScan);
+    double getRotationSpeed(MeasurementType type);
+    std::string getQWPDeviceName();
+    void updateQWPBestAngle();
+    bool areBothQWPSidesOptimized();
 };
