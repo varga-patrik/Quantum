@@ -23,7 +23,7 @@ DEFAULT_HISTOGRAMS = [1, 2, 3, 4]
 COINCIDENCE_WINDOW_PS = 1000  # ±1ns coincidence window in picoseconds (tau)
 TIMESTAMP_BUFFER_DURATION_SEC = 1.0  # Keep 1 second of timestamps in memory
 TIMESTAMP_BUFFER_MAX_SIZE = 10_000_000  # Max timestamps per channel (safety limit)
-TIMESTAMP_BATCH_INTERVAL_SEC = 0.5  # Send batches to peer every 0.5 seconds
+TIMESTAMP_BATCH_INTERVAL_SEC = 0.1  # Send batches to peer every 0.1 seconds (10 Hz)
 STREAM_PORTS_BASE = 4241  # Time Controller streaming ports: 4242, 4243, 4244, 4245
 
 # Theme colors

@@ -11,13 +11,19 @@ class StreamClient(Thread):
     Assing message_callback with a dedicate function to process timestamp on the fly.
     """
 
-    def __init__(self, addr):
+    def __init__(self, addr, socket_type: int = zmq.PAIR, subscribe_prefix: bytes = b""):
         Thread.__init__(self)
 
         self.running = False
 
+        self.socket_type = socket_type
+        self.subscribe_prefix = subscribe_prefix
+
         # initialize data socket
-        self.data_socket = zmq.Context().socket(zmq.PAIR)
+        self.data_socket = zmq.Context.instance().socket(socket_type)
+        self.data_socket.setsockopt(zmq.LINGER, 0)
+        if socket_type == zmq.SUB:
+            self.data_socket.setsockopt(zmq.SUBSCRIBE, subscribe_prefix)
         self.data_socket.connect(addr)
 
         # initialize monitor socket to check connection/disconnections
@@ -35,19 +41,51 @@ class StreamClient(Thread):
     def run(self):
         self.running = True
         while self.running:
-            for socket, *_ in self.poller.poll(timeout=1000):
+            try:
+                events = self.poller.poll(timeout=1000)
+            except zmq.ZMQError:
+                # Most commonly happens if sockets are closed while polling.
+                break
+
+            for socket, *_ in events:
                 if socket == self.data_socket:
-                    binary_timestamps = socket.recv()
+                    try:
+                        parts = socket.recv_multipart()
+                    except zmq.ZMQError:
+                        self.running = False
+                        break
+
+                    binary_timestamps = parts[-1] if len(parts) > 0 else b""
                     if len(binary_timestamps) == 0:
                         self.running = False
+                        break
 
-                    self.message_callback(binary_timestamps)
+                    try:
+                        self.message_callback(binary_timestamps)
+                    except Exception:
+                        # Callback exceptions should not kill the receiver thread.
+                        pass
 
                 if socket == self.monitor_socket:
-                    evt = recv_monitor_message(socket)
+                    try:
+                        evt = recv_monitor_message(socket)
+                    except zmq.ZMQError:
+                        self.running = False
+                        break
                     if evt["event"] == zmq.EVENT_DISCONNECTED:
                         self.running = False
+                        break
 
     def join(self):
         self.running = False
+        try:
+            if self.data_socket is not None:
+                self.data_socket.close(linger=0)
+        except Exception:
+            pass
+        try:
+            if self.monitor_socket is not None:
+                self.monitor_socket.close(linger=0)
+        except Exception:
+            pass
         super().join()

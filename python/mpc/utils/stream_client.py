@@ -9,6 +9,7 @@ import logging
 import threading
 from typing import Callable, Optional
 from gui_components.config import STREAM_PORTS_BASE
+import zmq
 
 logger = logging.getLogger(__name__)
 
@@ -57,26 +58,75 @@ class TimeControllerStreamClient:
             self._start_mock_stream(channel, callback)
         else:
             self._start_real_stream(channel, callback, port)
+
+    def _detect_stream_socket_type(self, addr: str) -> tuple[int, str]:
+        """Try to detect the ZMQ socket type used by the DLT stream endpoint."""
+        # Important: do NOT "probe" PAIR by connecting a temporary socket.
+        # ZMQ PAIR is strictly 1:1, and a probe can occupy the only connection
+        # and prevent the real StreamClient from receiving anything.
+        candidates: list[tuple[int, str]] = [
+            (zmq.PULL, "PULL"),
+            (zmq.SUB, "SUB"),
+        ]
+
+        ctx = zmq.Context.instance()
+        for socket_type, name in candidates:
+            sock = None
+            try:
+                sock = ctx.socket(socket_type)
+                sock.setsockopt(zmq.LINGER, 0)
+                if socket_type == zmq.SUB:
+                    sock.setsockopt(zmq.SUBSCRIBE, b"")
+                sock.connect(addr)
+
+                poller = zmq.Poller()
+                poller.register(sock, zmq.POLLIN)
+                events = dict(poller.poll(timeout=300))
+                if sock in events and events[sock] & zmq.POLLIN:
+                    # Consume one message to confirm actual traffic.
+                    parts = sock.recv_multipart(flags=zmq.NOBLOCK)
+                    payload = parts[-1] if len(parts) > 0 else b""
+                    if len(payload) > 0:
+                        return socket_type, name
+            except Exception:
+                # Ignore and try next type.
+                pass
+            finally:
+                try:
+                    if sock is not None:
+                        sock.close(linger=0)
+                except Exception:
+                    pass
+
+        # Fall back to PAIR (without having touched the endpoint with a PAIR probe).
+        return zmq.PAIR, "PAIR"
     
     def _start_real_stream(self, channel: int, callback: Callable[[bytes], None], port: int = None):
-        """Start real Time Controller stream."""
+        """Start real Time Controller stream via DLT service."""
         try:
-            # Use the existing StreamClient from utils.acquisitions
-            from utils.acquisitions import StreamClient
+            # Use the existing StreamClient from utils.acquisitions.streams
+            from utils.acquisitions.streams import StreamClient
             
-            # DLT returns the streaming port in the acquisition ID (e.g., "169.254.104.112:5556")
-            # Use that port if provided, otherwise fall back to default TC streaming ports
+            # DLT runs on localhost and streams data on the ports from acquisition IDs
+            # The acquisition ID format is "tc_address:port" (e.g., "169.254.104.112:5556")
+            # but DLT's streaming OUTPUT is on localhost:port, not on the TC's IP!
             if port is None:
                 from gui_components.config import STREAM_PORTS_BASE
                 port = STREAM_PORTS_BASE + channel
                 logger.info(f"Using default TC streaming port {port} for channel {channel}")
             
-            addr = f"tcp://{self.tc_address}:{port}"
+            # Connect to localhost since DLT is running locally and streams on localhost:port
+            addr = f"tcp://localhost:{port}"
             
             logger.info(f"Starting stream on {addr} for channel {channel}")
+
+            socket_type, socket_type_name = self._detect_stream_socket_type(addr)
+            logger.info(
+                f"Detected stream socket type {socket_type_name} for channel {channel} ({addr})"
+            )
             
             # Create stream client
-            client = StreamClient(addr)
+            client = StreamClient(addr, socket_type=socket_type)
             client.message_callback = callback
             
             self.stream_clients[channel] = client

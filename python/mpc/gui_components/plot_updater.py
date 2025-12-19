@@ -6,6 +6,7 @@ import numpy as np
 import random
 import logging
 from typing import Optional
+from pathlib import Path
 
 from mock_time_controller import safe_zmq_exec
 from utils.timestamp_stream import TimestampBuffer, CoincidenceCounter
@@ -74,21 +75,37 @@ class PlotUpdater:
         # Stream client (will be initialized when streaming starts)
         self.stream_client: Optional[TimeControllerStreamClient] = None
         self.streaming_active = False
+        self.streaming_is_mock = False
+
+        # File-tail streaming (DLT writes timestamps to files; we can read incrementally)
+        self._file_tail_stop_event = threading.Event()
+        self._file_tail_threads: dict[int, threading.Thread] = {}
+        self._file_tail_offsets: dict[int, int] = {1: 0, 2: 0, 3: 0, 4: 0}
         
         # Batch sending for peer exchange
         self.last_batch_send_time = time.time()
 
-    def start_streaming(self, tc_address: str, is_mock: bool = False):
+    def start_streaming(self, tc_address: str, is_mock: bool = False, 
+                       local_save_channels: list = None, remote_save_channels: list = None):
         """
         Start timestamp streaming from Time Controller via DLT service.
         
         Args:
             tc_address: Time Controller IP address
             is_mock: Use mock streaming for testing
+            local_save_channels: List of local channels to save to files (default: all [1,2,3,4])
+            remote_save_channels: List of remote channels to save to files (default: none [])
         """
+        # Default to saving all local channels if not specified
+        if local_save_channels is None:
+            local_save_channels = [1, 2, 3, 4]
+        if remote_save_channels is None:
+            remote_save_channels = []
         if self.streaming_active:
             logger.warning("Streaming already active")
             return
+
+        self.streaming_is_mock = is_mock
         
         logger.info(f"Starting timestamp streaming from {tc_address} (mock={is_mock})")
         
@@ -116,70 +133,97 @@ class PlotUpdater:
             except Exception as e:
                 logger.warning(f"Error checking/closing active acquisitions: {e}")
             
-            # Start DLT acquisitions for each channel
+            # STEP 1: Configure Time Controller REC settings FIRST (before DLT acquisitions)
+            # This follows the correct workflow from acquire_timestamps()
+            try:
+                # Trigger RECord signal manually (PLAY command)
+                zmq_exec(self.tc, "REC:TRIG:ARM:MODE MANUal")
+                # Enable the RECord generator
+                zmq_exec(self.tc, "REC:ENABle ON")
+                # STOP any already ongoing acquisition
+                zmq_exec(self.tc, "REC:STOP")
+                # Infinite number of records (continuous streaming)
+                zmq_exec(self.tc, "REC:NUM 0")
+                # 1 second duration per record (in picoseconds)
+                zmq_exec(self.tc, "REC:DURation 1000000000000")
+                logger.info("Configured Time Controller REC settings")
+            except Exception as e:
+                logger.error(f"Failed to configure REC settings: {e}")
+                return
+            
+            # STEP 2: Start DLT acquisitions for ALL channels (required for streaming)
+            # DLT must run to create ZMQ streaming endpoints
+            # Save to permanent files for checked channels, temp files for unchecked
+            import tempfile
+            
             output_dir = Path.home() / "Documents" / "AgodSolt" / "data"
             output_dir.mkdir(parents=True, exist_ok=True)
+            temp_dir = Path(tempfile.gettempdir()) / "mpc_streaming"
+            temp_dir.mkdir(exist_ok=True)
+            
+            logger.info(f"Starting DLT acquisitions for all channels (streaming), saving: {local_save_channels}")
             
             for channel in [1, 2, 3, 4]:
                 try:
                     # Clear any previous errors
                     zmq_exec(self.tc, f"RAW{channel}:ERRORS:CLEAR")
                     
-                    # Create filename for this acquisition
+                    # Determine file path: permanent for saved channels, temp for streaming-only
                     timestr = time_module.strftime("%Y%m%d_%H%M%S")
-                    filepath = output_dir / f"timestamps_live_ch{channel}_{timestr}.bin"
+                    if channel in local_save_channels:
+                        filepath = output_dir / f"timestamps_live_ch{channel}_{timestr}.bin"
+                        is_temp = False
+                        logger.info(f"Channel {channel}: saving to {filepath}")
+                    else:
+                        filepath = temp_dir / f"timestamps_temp_ch{channel}_{timestr}.bin"
+                        is_temp = True
+                        logger.debug(f"Channel {channel}: streaming only (temp file: {filepath})")
+                    
                     filepath_escaped = str(filepath).replace("\\", "\\\\")
                     
-                    # Tell DLT to start saving timestamps (also creates streaming endpoint)
+                    # Tell DLT to start acquisition (creates streaming endpoint + file)
                     command = f'start-save --address {tc_address} --channel {channel} --filename "{filepath_escaped}" --format bin --with-ref-index'
-                    logger.info(f"Sending DLT command: {command}")
                     answer = dlt_exec(dlt, command)
-                    logger.info(f"DLT response: {answer}")
                     acq_id = answer["id"]
                     
                     # Parse acquisition ID to get streaming port
                     # Format is "address:port" like "169.254.104.112:5556"
                     if ':' in acq_id:
                         stream_port = int(acq_id.split(':')[1])
-                        self.acquisition_ids[channel] = {'id': acq_id, 'port': stream_port}
-                        logger.info(f"Started DLT acquisition for channel {channel}, ID: {acq_id}, port: {stream_port}, file: {filepath}")
+                        self.acquisition_ids[channel] = {
+                            'id': acq_id, 
+                            'port': stream_port, 
+                            'filepath': filepath,
+                            'is_temp': is_temp
+                        }
+                        logger.info(f"Channel {channel}: DLT started, ID={acq_id}, port={stream_port}")
                     else:
-                        self.acquisition_ids[channel] = {'id': acq_id, 'port': None}
+                        self.acquisition_ids[channel] = {
+                            'id': acq_id, 
+                            'port': None, 
+                            'filepath': filepath,
+                            'is_temp': is_temp
+                        }
                         logger.warning(f"Could not parse port from acquisition ID: {acq_id}")
                     
-                    # Enable timestamp transmission from Time Controller
-                    # Check if already enabled first
-                    try:
-                        send_status = zmq_exec(self.tc, f"RAW{channel}:SEND?")
-                        if send_status.strip().upper() != "ON":
-                            zmq_exec(self.tc, f"RAW{channel}:SEND ON")
-                            send_status = zmq_exec(self.tc, f"RAW{channel}:SEND?")
-                        logger.info(f"RAW{channel}:SEND status: {send_status}")
-                    except Exception as e:
-                        logger.error(f"Error enabling RAW{channel}:SEND: {e}")
-                        raise  # Re-raise to be caught by outer exception handler
-                    
-                    # Check for errors
-                    time_module.sleep(0.1)  # Brief delay to let any errors accumulate
-                    error_count = zmq_exec(self.tc, f"RAW{channel}:ERRORS?")
-                    logger.info(f"Channel {channel} error count: {error_count}")
+                    # Enable timestamp transfer for this channel immediately after DLT starts
+                    # (Following the pattern from open_timestamps_acquisition)
+                    zmq_exec(self.tc, f"RAW{channel}:SEND ON")
+                    logger.info(f"Channel {channel}: RAW:SEND enabled")
                     
                 except Exception as e:
                     logger.error(f"Failed to start DLT acquisition for channel {channel}: {e}")
                     # Continue with other channels even if one fails
             
-            # Start the Time Controller acquisition (REC:PLAY)
-            # This tells the TC to actually start generating and sending timestamps
+            # STEP 3: Start the Time Controller acquisition (REC:PLAY)
             try:
+                zmq_exec(self.tc, "REC:PLAY")
+                time_module.sleep(0.2)  # Give it a moment to transition
                 rec_stage = zmq_exec(self.tc, "REC:STAGe?")
-                logger.info(f"REC stage before PLAY: {rec_stage}")
+                logger.info(f"Started Time Controller recording - REC stage: {rec_stage}")
                 
                 if rec_stage.strip().upper() != "PLAYING":
-                    zmq_exec(self.tc, "REC:PLAY")
-                    rec_stage_after = zmq_exec(self.tc, "REC:STAGe?")
-                    logger.info(f"Started Time Controller recording - REC stage: {rec_stage_after}")
-                else:
-                    logger.info("Time Controller already in PLAYING state")
+                    logger.warning(f"Time Controller did not enter PLAYING state (still {rec_stage})")
             except Exception as e:
                 logger.error(f"Failed to start Time Controller recording: {e}")
                 # Try to continue anyway - streaming might still work
@@ -199,45 +243,61 @@ class PlotUpdater:
             except Exception as e:
                 logger.warning(f"Could not check DLT status: {e}")
         
-        # Create stream client connected to Time Controller's native streaming ports
-        # TC streams on ports 4242-4245 (STREAM_PORTS_BASE + channel)
-        # Note: DLT handles file saving separately; for live GUI streaming we connect directly to TC
-        self.stream_client = TimeControllerStreamClient(tc_address, is_mock=is_mock)
-        
-        # Start streams for each channel with callback
-        # Don't use DLT acquisition ports - those are for DLT's internal use
-        # Use None for port to let StreamClient use default TC streaming ports (4242-4245)
-        for channel in [1, 2, 3, 4]:
-            callback = lambda data, ch=channel: self._on_timestamp_batch(ch, data)
-            self.stream_client.start_stream(channel, callback, port=None)
-        
+        # Create stream client connected to DLT streaming ports
+        # Mark streaming active before starting background ingestion workers.
         self.streaming_active = True
+
+        # NOTE: In practice, the DLT/TC streaming ports may be single-consumer or not usable
+        # in parallel with DLT saving. Since DLT is already writing the timestamps to files,
+        # we tail those files for reliable live updates.
+        if is_mock:
+            self.stream_client = TimeControllerStreamClient(tc_address, is_mock=True)
+            for channel in [1, 2, 3, 4]:
+                callback = lambda data, ch=channel: self._on_timestamp_batch(ch, data)
+                self.stream_client.start_stream(channel, callback, port=None)
+        else:
+            self.stream_client = None
+            self._start_file_tail_threads()
         logger.info("Timestamp streaming started for all channels")
     
     def stop_streaming(self):
         """Stop timestamp streaming and DLT acquisitions."""
-        if not self.streaming_active or self.stream_client is None:
+        if not self.streaming_active:
             return
         
         logger.info("Stopping timestamp streaming")
         
-        # Stop stream clients first
-        self.stream_client.stop_all_streams()
+        # Stop file-tail threads (if used)
+        self._stop_file_tail_threads()
+
+        # Stop stream clients (mock mode)
+        if self.stream_client is not None:
+            self.stream_client.stop_all_streams()
         
         # Stop DLT acquisitions (if not mock)
-        if not self.stream_client.is_mock and hasattr(self, 'acquisition_ids'):
+        if not self.streaming_is_mock and hasattr(self, 'acquisition_ids'):
             from utils.common import zmq_exec, dlt_exec
             
             # Get DLT connection from app_ref
             dlt = getattr(self.app_ref, 'dlt', None) if self.app_ref else None
             
             if dlt:
-                # Stop DLT acquisitions
+                # Stop DLT acquisitions and clean up temporary files
                 for channel, acq_info in self.acquisition_ids.items():
                     try:
                         acq_id = acq_info['id'] if isinstance(acq_info, dict) else acq_info
                         status = dlt_exec(dlt, f"stop --id {acq_id}")
                         logger.info(f"Stopped DLT acquisition for channel {channel}")
+                        
+                        # Delete temporary files (streaming-only channels)
+                        if isinstance(acq_info, dict) and acq_info.get('is_temp', False):
+                            filepath = acq_info.get('filepath')
+                            if filepath and Path(filepath).exists():
+                                try:
+                                    Path(filepath).unlink()
+                                    logger.info(f"Deleted temporary file: {filepath}")
+                                except Exception as e:
+                                    logger.warning(f"Could not delete temp file {filepath}: {e}")
                     except Exception as e:
                         logger.error(f"Error stopping DLT acquisition for channel {channel}: {e}")
                 
@@ -248,8 +308,8 @@ class PlotUpdater:
                 except Exception as e:
                     logger.error(f"Failed to stop TC recording: {e}")
                 
-                # Disable RAW streaming on Time Controller
-                for channel in self.acquisition_ids.keys():
+                # Disable RAW streaming on Time Controller (for all channels, not just saved ones)
+                for channel in [1, 2, 3, 4]:
                     try:
                         zmq_exec(self.tc, f"RAW{channel}:SEND OFF")
                         logger.info(f"Disabled RAW{channel}:SEND on Time Controller")
@@ -257,6 +317,83 @@ class PlotUpdater:
                         logger.error(f"Failed to disable streaming on channel {channel}: {e}")
         
         self.streaming_active = False
+
+    def _start_file_tail_threads(self):
+        """Start background readers that tail the DLT output files and fill local buffers."""
+        # Reset offsets & stop flag
+        self._file_tail_stop_event.clear()
+        for ch in [1, 2, 3, 4]:
+            self._file_tail_offsets[ch] = 0
+
+        for channel in [1, 2, 3, 4]:
+            t = threading.Thread(
+                target=self._file_tail_worker,
+                args=(channel,),
+                daemon=True,
+                name=f"DLTFileTail-Ch{channel}",
+            )
+            self._file_tail_threads[channel] = t
+            t.start()
+        logger.info("Started DLT file-tail threads for live timestamps")
+
+    def _stop_file_tail_threads(self):
+        """Stop file-tail background readers."""
+        try:
+            self._file_tail_stop_event.set()
+            for ch, t in list(self._file_tail_threads.items()):
+                if t.is_alive():
+                    t.join(timeout=1.0)
+            self._file_tail_threads.clear()
+        except Exception:
+            pass
+
+    def _file_tail_worker(self, channel: int):
+        """Continuously read newly appended bytes from the channel's DLT file."""
+        chunk_size = 256 * 1024  # bytes
+        sleep_sec = 0.05
+
+        while not self._file_tail_stop_event.is_set():
+            acq = getattr(self, 'acquisition_ids', {}).get(channel)
+            filepath = None
+            if isinstance(acq, dict):
+                filepath = acq.get('filepath')
+            if not filepath:
+                time.sleep(sleep_sec)
+                continue
+
+            try:
+                path = Path(filepath)
+                if not path.exists():
+                    time.sleep(sleep_sec)
+                    continue
+
+                with path.open('rb') as f:
+                    offset = self._file_tail_offsets.get(channel, 0)
+                    try:
+                        f.seek(offset)
+                    except Exception:
+                        # If file was rotated/truncated, restart from 0.
+                        offset = 0
+                        f.seek(0)
+
+                    data = f.read(chunk_size)
+                    if not data:
+                        time.sleep(sleep_sec)
+                        continue
+
+                    # Keep offset at a multiple of 16 bytes (2x uint64) to avoid splitting pairs.
+                    valid_len = (len(data) // 16) * 16
+                    if valid_len <= 0:
+                        time.sleep(sleep_sec)
+                        continue
+
+                    payload = data[:valid_len]
+                    self._file_tail_offsets[channel] = offset + valid_len
+
+                    self.local_buffers[channel].add_timestamps(payload, with_ref_index=True)
+            except Exception:
+                # File may be temporarily locked or unavailable; retry.
+                time.sleep(0.2)
     
     def _on_timestamp_batch(self, channel: int, binary_data: bytes):
         """
@@ -287,30 +424,26 @@ class PlotUpdater:
             import base64
             import zlib
             
-            # Limit: only send most recent timestamps (last 100ms worth, ~5000 per channel)
-            # This is enough for coincidence detection while keeping network load manageable
-            MAX_TIMESTAMPS_PER_CHANNEL = 5000
-            
+            # Send ALL timestamps - no limits
             # Collect timestamps from all channels as compressed binary
             batch_data = {}
             total_ts = 0
             for channel in [1, 2, 3, 4]:
                 timestamps = self.local_buffers[channel].get_timestamps()
                 if len(timestamps) > 0:
-                    # Only send the most recent N timestamps
-                    recent = timestamps[-MAX_TIMESTAMPS_PER_CHANNEL:] if len(timestamps) > MAX_TIMESTAMPS_PER_CHANNEL else timestamps
+                    # Send ALL timestamps in buffer (no limit)
                     
                     # Convert to binary (much more efficient than JSON)
-                    binary = recent.tobytes()
+                    binary = timestamps.tobytes()
                     # Compress to reduce network load
                     compressed = zlib.compress(binary, level=1)  # Fast compression
                     # Encode as base64 for JSON transport
                     encoded = base64.b64encode(compressed).decode('ascii')
                     batch_data[channel] = {
                         'data': encoded,
-                        'count': len(recent)
+                        'count': len(timestamps)
                     }
-                    total_ts += len(recent)
+                    total_ts += len(timestamps)
             
             if batch_data and total_ts > 0:
                 # Send timestamp batch to peer
@@ -506,8 +639,13 @@ class PlotUpdater:
         self.thread.start()
         logger.info("Counter display started (streaming not active)")
     
-    def start(self):
-        """Start the full measurement: timestamp streaming + coincidence calculations."""
+    def start(self, local_save_channels: list = None, remote_save_channels: list = None):
+        """Start the full measurement: timestamp streaming + coincidence calculations.
+        
+        Args:
+            local_save_channels: List of local channels to save to files (default: all [1,2,3,4])
+            remote_save_channels: List of remote channels to save to files (default: none [])
+        """
         if self.streaming_active:
             logger.warning("Streaming already active")
             return
@@ -530,7 +668,9 @@ class PlotUpdater:
             tc_address = "localhost"
         
         logger.info(f"Starting timestamp streaming with mock={is_mock}, address={tc_address}")
-        self.start_streaming(tc_address, is_mock=is_mock)
+        self.start_streaming(tc_address, is_mock=is_mock, 
+                           local_save_channels=local_save_channels,
+                           remote_save_channels=remote_save_channels)
         logger.info("Full correlation measurement started")
 
     def stop(self):

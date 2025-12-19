@@ -23,7 +23,7 @@ class MockTimeController:
     - Realistic quantum correlations (for entangled pairs)
     - Reference second counter
     """
-    def __init__(self):
+    def __init__(self, disable_data: bool = True):
         print("╔═══════════════════════════════════════════════════════════╗")
         print("║   ⚠️  MOCK TIME CONTROLLER - SIMULATED DATA ONLY ⚠️      ║")
         print("║   NOT REAL HARDWARE - FOR TESTING PURPOSES               ║")
@@ -31,7 +31,12 @@ class MockTimeController:
         logger.warning("MockTimeController initialized - using SIMULATED data")
         
         self._is_mock = True
+        self._disable_data = disable_data  # If True, return no data (for testing)
         self._base_seed = random.randint(0, 1000000)
+        
+        if self._disable_data:
+            print("║   📛 DATA DISABLED - Returning ZERO/EMPTY data         ║")
+            logger.warning("MockTimeController: DATA DISABLED - returning zero data")
         
         # Simulation parameters
         self._detection_rate = 50000  # 50 kHz per channel (singles)
@@ -54,6 +59,11 @@ class MockTimeController:
             Binary timestamp data (uint64 pairs if with_ref_index, else uint64 only)
         """
         logger.debug(f"⚠️ MOCK: Generating timestamps for channel {channel}, duration={duration_ps}ps")
+        
+        # Return empty data if disabled
+        if self._disable_data:
+            logger.debug(f"⚠️ MOCK: Data disabled - returning empty for channel {channel}")
+            return b''
         
         # Calculate how many timestamps to generate
         duration_sec = duration_ps / 1e12
@@ -121,6 +131,11 @@ class MockTimeController:
     
     def recv_string(self) -> str:
         """Mock recv_string - returns simulated counter values."""
+        # Return 0 if data disabled
+        if self._disable_data:
+            logger.debug("⚠️ MOCK recv_string: 0 (data disabled)")
+            return "0"
+        
         # Increment counters to simulate ongoing photon detection
         for i in range(4):
             self._counter_values[i] += random.randint(100, 500)
@@ -133,6 +148,11 @@ class MockTimeController:
         """Return a callable for any unmocked method."""
         def mock_method(*args, **kwargs):
             logger.debug(f"⚠️ MOCK method called: {name}(*{args}, **{kwargs})")
+            # Return 0 if data disabled
+            if self._disable_data:
+                if 'counter' in name.lower() or 'count' in name.lower():
+                    return 0
+                return None
             # Return realistic random values with some variation
             if 'counter' in name.lower() or 'count' in name.lower():
                 return random.randint(20000, 100000)
@@ -150,13 +170,14 @@ class MockTimeControllerWrapper:
     Mock wrapper that mimics the TimeController class interface
     This is used when the real TimeController cannot connect
     """
-    def __init__(self, address: str, counters=("1","2","3","4"), integration_time_ps=None):
+    def __init__(self, address: str, counters=("1","2","3","4"), integration_time_ps=None, disable_data: bool = True):
         logger.warning("MockTimeControllerWrapper initialized for %s", address)
         self.address = address
         self.counters = counters
         self.integration_time_ps = integration_time_ps
-        self.tc = MockTimeController()
+        self.tc = MockTimeController(disable_data=disable_data)
         self._is_mock = True
+        self._disable_data = disable_data
     
     def connect(self):
         """Mock connect - already 'connected'"""
@@ -165,12 +186,19 @@ class MockTimeControllerWrapper:
     
     def query_counter(self, idx: int) -> int:
         """Return random counter value for the given index"""
+        if self._disable_data:
+            logger.debug(f"Mock query_counter({idx}): 0 (data disabled)")
+            return 0
         value = random.randint(20000, 100000)
         logger.debug(f"Mock query_counter({idx}): {value}")
         return value
     
     def query_all_counters(self):
         """Return random values for all 4 counters"""
+        if self._disable_data:
+            values = (0, 0, 0, 0)
+            logger.debug("Mock query_all_counters: (0, 0, 0, 0) (data disabled)")
+            return values
         values = tuple(random.randint(20000, 100000) for _ in range(4))
         logger.debug(f"Mock query_all_counters: {values}")
         return values

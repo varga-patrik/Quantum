@@ -165,9 +165,9 @@ class CoincidenceCounter:
         """
         Count coincidences between local and remote timestamps.
         
-        Uses optimized O(n+m) sliding window algorithm with consumption.
-        Each remote timestamp is matched AT MOST ONCE (physically accurate for entangled pairs).
-        Finds the CLOSEST remote timestamp within the window for each local timestamp.
+        Uses optimized O(n+m) sliding window algorithm.
+        Each remote timestamp can be matched MULTIPLE TIMES (for uncertain pairing).
+        Counts all local timestamps that have at least one remote timestamp within the window.
         
         Args:
             local_timestamps: Local timestamps in picoseconds (sorted)
@@ -175,7 +175,7 @@ class CoincidenceCounter:
             time_offset_ps: Time offset to apply to remote timestamps (from C++ Correlator)
         
         Returns:
-            Number of coincidences found (each photon matched at most once)
+            Number of coincidences found (multiple matches allowed)
         """
         if len(local_timestamps) == 0 or len(remote_timestamps) == 0:
             return 0
@@ -183,37 +183,28 @@ class CoincidenceCounter:
         # Apply time offset to remote timestamps
         remote_adjusted = remote_timestamps + time_offset_ps
         
-        # Track which remote timestamps have been consumed
-        consumed = np.zeros(len(remote_adjusted), dtype=bool)
-        
         coincidences = 0
         j = 0  # Pointer for start of search window
         
         # For each local timestamp
         for local_ts in local_timestamps:
-            # Move window start pointer forward (skip consumed and out-of-window timestamps)
-            while j < len(remote_adjusted) and (consumed[j] or remote_adjusted[j] < local_ts - self.window_ps):
+            # Move window start pointer forward (skip out-of-window timestamps)
+            while j < len(remote_adjusted) and remote_adjusted[j] < local_ts - self.window_ps:
                 j += 1
             
             if j >= len(remote_adjusted):
                 break  # No more remote timestamps to check
             
-            # Find the CLOSEST remote timestamp within window [local_ts - window, local_ts + window]
-            best_idx = -1
-            best_distance = self.window_ps + 1  # Initialize to larger than window
-            
+            # Check if ANY remote timestamp exists within window [local_ts - window, local_ts + window]
             k = j
+            found_match = False
             while k < len(remote_adjusted) and remote_adjusted[k] <= local_ts + self.window_ps:
-                if not consumed[k]:
-                    distance = abs(remote_adjusted[k] - local_ts)
-                    if distance <= self.window_ps and distance < best_distance:
-                        best_distance = distance
-                        best_idx = k
+                # Any remote timestamp in window counts as a coincidence
+                found_match = True
+                break  # Found at least one match, count it and move to next local timestamp
                 k += 1
             
-            # If we found a match, consume it and count the coincidence
-            if best_idx != -1:
-                consumed[best_idx] = True
+            if found_match:
                 coincidences += 1
         
         return coincidences

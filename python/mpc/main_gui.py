@@ -125,6 +125,8 @@ class App:
                 self.peer_connection.register_command_handler('STREAMING_STOP', self._handle_remote_streaming_stop)
                 self.peer_connection.register_command_handler('TIMESTAMP_BATCH', self._handle_remote_timestamp_batch)
                 self.peer_connection.register_command_handler('COUNTER_DATA', self._handle_remote_counter_data)
+                self.peer_connection.register_command_handler('SAVE_SETTINGS_UPDATE', self._handle_save_settings_update)
+                self.peer_connection.register_command_handler('SAVE_SETTINGS_REQUEST', self._handle_save_settings_request)
                 
                 # Start connection (server listens, client connects)
                 if self.peer_connection.start():
@@ -314,13 +316,54 @@ class App:
             # Stop local streaming when peer requests it (but keep counter display running)
             self.plot_updater.stop_streaming()
     
+    def _handle_save_settings_update(self, data: dict):
+        """Handle save settings update from remote peer (they're telling us what they're saving)."""
+        try:
+            save_channels = data.get('save_channels', [])
+            logger.info(f"Received save settings from peer: {save_channels}")
+            
+            # Update remote checkboxes to reflect peer's settings
+            if hasattr(self, 'remote_save_vars'):
+                for i in range(4):
+                    channel = i + 1
+                    should_save = channel in save_channels
+                    self.remote_save_vars[i].set(should_save)
+        except Exception as e:
+            logger.error(f"Error handling save settings update: {e}")
+    
+    def _handle_save_settings_request(self, data: dict):
+        """Handle request from peer to change our local save settings."""
+        try:
+            save_channels = data.get('save_channels', [])
+            logger.info(f"Peer requested we update our save settings to: {save_channels}")
+            
+            # Update our local checkboxes based on peer's request
+            if hasattr(self, 'local_save_vars'):
+                for i in range(4):
+                    channel = i + 1
+                    should_save = channel in save_channels
+                    self.local_save_vars[i].set(should_save)
+                
+                # After updating, send back confirmation
+                self._on_local_save_changed()
+        except Exception as e:
+            logger.error(f"Error handling save settings request: {e}")
+    
     def _on_start_streaming(self):
         """Start streaming on both local and remote sites."""
         logger.info("Starting synchronized streaming on both sites")
         
-        # Start local streaming
+        # Get save settings from checkboxes
+        local_save_channels = [i+1 for i in range(4) if self.local_save_vars[i].get()]
+        remote_save_channels = [i+1 for i in range(4) if self.remote_save_vars[i].get()] if self.remote_save_vars else []
+        
+        logger.info(f"Saving local channels: {local_save_channels}")
+        logger.info(f"Saving remote channels: {remote_save_channels}")
+        
+        # Start local streaming with save settings
         if hasattr(self, 'plot_updater') and self.plot_updater:
-            self.plot_updater.start()
+            self.plot_updater.start(local_save_channels=local_save_channels, 
+                                   remote_save_channels=remote_save_channels)
         
         # Send command to peer to start streaming
         if self.peer_connection and self.peer_connection.is_connected():
@@ -686,11 +729,20 @@ class App:
         )
 
         self.beutes_labels = []
+        self.local_save_vars = []  # Checkbox variables for local channels
         for i in range(4):
             tk.Label(local_counters, text=f"{i+1}.", background='#E8F5E9').grid(row=1, column=i, sticky="news")
             lbl = tk.Label(local_counters, text="0", width=10, background='#E8F5E9')
             lbl.grid(row=2, column=i, sticky="news")
             self.beutes_labels.append(lbl)
+            
+            # Add save-to-file checkbox (checked by default)
+            save_var = tk.BooleanVar(value=True)
+            cb = tk.Checkbutton(local_counters, text='Save', variable=save_var, 
+                              background='#E8F5E9', font=('Arial', 8),
+                              command=lambda: self._on_local_save_changed())
+            cb.grid(row=3, column=i, sticky="news")
+            self.local_save_vars.append(save_var)
 
         # REMOTE COUNTERS (if peer connected)
         if self.peer_connection:
@@ -705,20 +757,76 @@ class App:
             )
 
             self.remote_beutes_labels = []
+            self.remote_save_vars = []  # Checkbox variables for remote channels
             for i in range(4):
                 tk.Label(remote_counters, text=f"{i+1}.", background='#E3F2FD').grid(row=1, column=i, sticky="news")
                 lbl = tk.Label(remote_counters, text="---", width=10, background='#E3F2FD')
                 lbl.grid(row=2, column=i, sticky="news")
                 self.remote_beutes_labels.append(lbl)
+                
+                # Add save-to-file checkbox (checked by default)
+                save_var = tk.BooleanVar(value=True)
+                cb = tk.Checkbutton(remote_counters, text='Save', variable=save_var,
+                                  background='#E3F2FD', font=('Arial', 8),
+                                  command=lambda: self._on_remote_save_changed())
+                cb.grid(row=3, column=i, sticky="news")
+                self.remote_save_vars.append(save_var)
         else:
             self.remote_beutes_labels = []
+            self.remote_save_vars = []
 
         # Store remote counter values (received from peer)
         self.remote_beutes_szamok = [0, 0, 0, 0]
+        
+        # Send initial save settings to peer
+        self.root.after(1000, self._send_initial_save_settings)
 
         # Start periodic counter update
         self._update_counters()
 
+    def _send_initial_save_settings(self):
+        """Send initial local save settings to peer after startup."""
+        if self.peer_connection and self.peer_connection.is_connected():
+            self._on_local_save_changed()
+    
+    def _on_local_save_changed(self):
+        """Called when local save checkboxes change - notify peer of our settings."""
+        if not hasattr(self, 'local_save_vars'):
+            return
+        
+        local_save_channels = [i+1 for i in range(4) if self.local_save_vars[i].get()]
+        logger.info(f"Local save settings changed: {local_save_channels}")
+        
+        # Notify peer of our save settings (they display this in their REMOTE checkboxes)
+        if self.peer_connection and self.peer_connection.is_connected():
+            try:
+                self.peer_connection.send_command('SAVE_SETTINGS_UPDATE', {
+                    'save_channels': local_save_channels
+                })
+            except Exception as e:
+                logger.error(f"Failed to send save settings to peer: {e}")
+    
+    def _on_remote_save_changed(self):
+        """Called when remote save checkboxes change - tell peer to change their settings."""
+        if not hasattr(self, 'remote_save_vars'):
+            return
+        
+        remote_save_channels = [i+1 for i in range(4) if self.remote_save_vars[i].get()]
+        logger.info(f"Remote save settings changed (will request peer to save): {remote_save_channels}")
+        
+        # Send command to peer to update their LOCAL save settings
+        if self.peer_connection and self.peer_connection.is_connected():
+            try:
+                # Send as a request for them to update their local save checkboxes
+                self.peer_connection.send_command('SAVE_SETTINGS_REQUEST', {
+                    'save_channels': remote_save_channels
+                })
+                logger.info(f"Requested peer to update save settings: {remote_save_channels}")
+            except Exception as e:
+                logger.error(f"Failed to send save settings request to peer: {e}")
+        else:
+            logger.warning("No peer connection - cannot change remote save settings")
+    
     def _update_counters(self):
         """Periodically update counter labels from plot updater."""
         # Update local counters
