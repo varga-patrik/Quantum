@@ -60,8 +60,8 @@ public:
         buff1_size(0),
         buff2_size(0),
         tau(0),
-        Tshift(100000000),   // alap�rtelmezett shift
-        Tbin(1000),          // alap�rtelmezett bin
+        Tshift(100*1e6),   // alap�rtelmezett shift
+        Tbin(5000),          // alap�rtelmezett bin
         dataset1(nullptr),
         dataset2(nullptr)
     {
@@ -135,4 +135,5 @@ public:
     void noise_reduc_bound(const char*, const char*); //zajszures
     void copyFiles(const std::vector<std::string>&, const char*, size_t); //sok kicsi fajl osszefuzese egy nagyobb fajlba, mikozben minden ertekhez hozzad egy adott delay-t
     uint64_t runCorrelation(bool, const std::vector<std::string>&, const std::vector<std::string>&, uint64_t); //korrelacio futtatasa
+    void read_data_vector(char* buff);
 };

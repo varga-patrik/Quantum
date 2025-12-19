@@ -17,6 +17,7 @@
 #include "fs_util.h"
 #include "KinesisUtil.h"
 #include "direct.h"
+#include "Correlator.h"
 
 // Need to link with Ws2_32.lib
 #pragma comment (lib, "Ws2_32.lib")
@@ -190,6 +191,45 @@ void sendFile(SOCKET clientSocket, const std::string& filePath) {
     file.close();
 }
 
+void sendFftwBuffer(SOCKET socket, Correlator& correlator) {
+    size_t totalSize = correlator.buff2_size;
+    char* bufferPtr = reinterpret_cast<char*>(correlator.buff2);
+
+    // Send in chunks with 3-byte headers
+    const size_t CHUNK_SIZE = DEFAULT_BUFLEN;
+    std::vector<char> sendBuffer(CHUNK_SIZE);
+
+    size_t bytesSent = 0;
+    while(bytesSent < totalSize) {
+        size_t bytesToSend = std::min(CHUNK_SIZE, totalSize - bytesSent);
+
+        // Prepare header
+        char header[3];
+        header[0] = (bytesToSend >> 16) & 0xFF;
+        header[1] = (bytesToSend >> 8) & 0xFF;
+        header[2] = bytesToSend & 0xFF;
+
+        // Send header
+        int result = send(socket, header, 3, 0);
+        if (result == SOCKET_ERROR) {
+            std::cerr << "Failed to send header. Error: " << WSAGetLastError() << std::endl;
+            return;
+        }
+
+        // Copy data to send buffer
+        sendBuffer.insert(sendBuffer.begin(), bufferPtr + bytesSent, bufferPtr + bytesSent + bytesToSend);
+
+        // Send data
+        result = send(socket, sendBuffer.data(), bytesToSend, 0);
+        if (result == SOCKET_ERROR) {
+            std::cerr << "Failed to send data. Error: " << WSAGetLastError() << std::endl;
+            return;
+        }
+
+        bytesSent += bytesToSend;
+    }
+}
+
 int main(void) 
 {
     WSADATA wsaData;
@@ -206,7 +246,7 @@ int main(void)
     int recvbuflen = DEFAULT_BUFLEN;
 
     //kapcsolat felepitese a gps oraval, output stringhez nem tartozik erdemi funkcio, azt korabban tesztelesre hasznaltam
-    std::string ip_text = "148.6.27.165";
+    std::string ip_text = "172.26.34.159";
     std::string output = "diff_data.csv";
     FSUtil fs(6000, ip_text, output);
 
@@ -296,6 +336,8 @@ int main(void)
         device_wigner_2.startPolling(200);
         device_wigner_4.startPolling(200);
 
+        Correlator correlator(100000, (1ULL << 20));
+
         do {
             std::ostringstream path;
             iResult = recv(ClientSocket, recvbuf, recvbuflen, 0);
@@ -331,6 +373,30 @@ int main(void)
 
                     send(ClientSocket, eotHeader, 3, 0);
                     send(ClientSocket, eotMarker.c_str(), eotMarker.size(), 0);
+                }
+
+                if(fs.is_same_str(recvbuf, "read_correlator_buffer")){
+                    
+                    correlator.buff2 = fftw_alloc_complex(correlator.N);
+
+                    correlator.copyFiles(collectFiles("C:\\Users\\MCL\\Documents\\VargaPatrik\\Quantum\\data", "wigner"), correlator.modifiable_dataset2, 0);
+                    correlator.buff2_size = correlator.read_data(correlator.modifiable_dataset2, 2, 2048, correlator.chunk_size, 
+                                            correlator.N, correlator.h2, correlator.h2d, Nbin, correlator.Tbin, 0);
+
+                    sendFftwBuffer(ClientSocket, correlator);
+
+                    //Send end-of-transmission marker
+                    std::string eotMarker = "EOT";
+                    char eotHeader[3];
+                    eotHeader[0] = (eotMarker.size() >> 16) & 0xFF;
+                    eotHeader[1] = (eotMarker.size() >> 8) & 0xFF;
+                    eotHeader[2] = eotMarker.size() & 0xFF;
+
+                    send(ClientSocket, eotHeader, 3, 0);
+                    send(ClientSocket, eotMarker.c_str(), eotMarker.size(), 0);
+
+                    fftw_free(correlator.buff2);
+                    correlator.buff2 = nullptr;
                 }
 
                 else if (fs.is_in(recvbuf, "rotate")) {

@@ -32,7 +32,7 @@ size_t Correlator::read_data(const std::string& filePath, int buffId, uint64_t t
         || inFile.gcount())
     {
         size_t numRead = inFile.gcount() / sizeof(uint64_t);
-        buffSize += numRead;
+        buffSize += numRead * sizeof(uint64_t);
 
         for (size_t k = 0; k + 1 < numRead; k += 2) {
             //azert ilyen formatumban vannak az adatok mert minden masodik adat a masodperc szamlalo
@@ -301,7 +301,7 @@ void Correlator::delete_marked_values(const char* fname) {
 }
 
 size_t Correlator::get_delay_estimate() {
-    return 10000;
+    return 100 * 1e6;
 }
 
 //zajszures azon az alapon hogy azokat az ertekeket torli a nagyobb fajlbol aminek nincs megfelelo parja a kisebb fajlban
@@ -314,8 +314,7 @@ void Correlator::noise_reduc_bound(const char* fp1, const char* fp2) {
     const char* larger_fp_name = (size1 > size2) ? fp1 : fp2;
     const char* smaller_fp_name = (size1 < size2) ? fp1 : fp2;
 
-    //nincs kulonosebb oka miert pont ennyi, eloszor ezt irtam be es mukodott azota nem valtoztattam rajta
-    size_t bound_size = 10000;
+    size_t bound_size = 1 * 1e6;
 
     std::ifstream smallerFile(smaller_fp_name, std::ios::binary);
     if (!smallerFile) {
@@ -403,6 +402,10 @@ void Correlator::copyFiles(const std::vector<std::string>& inputPaths, const cha
     }
 }
 
+void Correlator::read_data_vector(char* buff) {
+    this->buff2 = (fftw_complex*) buff;
+}
+
 //korrelacio futtatasa
 uint64_t Correlator::runCorrelation(bool reducStr, const std::vector<std::string>& dataset1Path, const std::vector<std::string>& dataset2Path, uint64_t tauInput)
 {
@@ -439,20 +442,22 @@ uint64_t Correlator::runCorrelation(bool reducStr, const std::vector<std::string
         this->Tbin,
         this->Tshift);
 
-    std::string dataset2 = this->modifiable_dataset2;
-    this->buff2_size = read_data(dataset2, 2,
-        this->tau,
-        this->chunk_size,
-        this->N,
-        this->h2,
-        this->h2d,
-        Nbin,
-        this->Tbin,
-        /*Tshift=*/0);
+    if (!dataset2Path.empty()) {
+        std::string dataset2 = this->modifiable_dataset2;
+        this->buff2_size = read_data(dataset2, 2,
+            this->tau,
+            this->chunk_size,
+            this->N,
+            this->h2,
+            this->h2d,
+            Nbin,
+            this->Tbin,
+            this->Tshift);
+    }
 
     Vmax smax = CalculateDeltaT(this->N);
     fprintf(stderr, "max(S) = %f, kmax = %zu\n", smax.max, smax.kmax);
-    fprintf(stderr, "Delta T = %" PRIu64 "\n", this->tau * (uint64_t)smax.kmax);
+    fprintf(stderr, "Delta T = %f microsec \n", (this->tau * (uint64_t)smax.kmax) / 1e6);
 
     fftw_free(this->buff1);
     fftw_free(this->buff2);

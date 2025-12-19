@@ -105,6 +105,7 @@ public:
     double getCurrentVisibility() const { return currentVisibility; }
     OrchestratorStep getCurrentStep() const { return currentStep; }
     const std::vector<uint64_t>& getCoincidenceBins() const { return coincidenceBins; }
+    void clearDataFolder();
 
 private:
     // Step implementations
@@ -142,7 +143,6 @@ private:
     void advanceQWPOptimization();
     std::string rotateToMinVis();
     int64_t parseGPSTime(const std::string& gpsTimeStr);
-    void clearDataFolder();
     bool hasConverged();
     size_t findMinVisibilityBin();
     bool isQWPScanComplete();

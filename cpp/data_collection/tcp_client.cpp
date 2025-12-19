@@ -116,6 +116,37 @@ void readReceivingFile(SOCKET socket, const std::vector<char>& firstChunk, int f
     outFile.close();
 }
 
+char* readFftwBuffer(SOCKET socket, const std::vector<char>& firstChunk, int firstChunkSize) {
+    std::vector<char> allData;
+    allData.insert(allData.end(), firstChunk.begin(), firstChunk.begin() + firstChunkSize);
+    
+    char header[3];
+    while (true) {
+        if (recvAll(socket, header, 3) <= 0) break;
+        
+        int readCount = ((unsigned char)header[0] << 16) |
+                       ((unsigned char)header[1] << 8) |
+                       (unsigned char)header[2];
+        
+        std::vector<char> buffer(readCount);
+        if (recvAll(socket, buffer.data(), readCount) <= 0) break;
+        
+        // Check for EOF marker
+        const std::string eofMarker = "EOF";
+        if (readCount == eofMarker.size() &&
+            std::equal(eofMarker.begin(), eofMarker.end(), buffer.begin())) {
+            break; // End of FFTW buffer
+        }
+        
+        allData.insert(allData.end(), buffer.begin(), buffer.end());
+    }
+    
+    size_t totalSize = allData.size();
+    char* fftwBuffer = new char[totalSize];
+    std::copy(allData.begin(), allData.end(), fftwBuffer);
+    return fftwBuffer;
+}
+
 int main(int argc, char **argv) 
 {
     WSADATA wsaData;
@@ -215,7 +246,7 @@ int main(int argc, char **argv)
         device_bme_2.startPolling(200);
         device_bme_4.startPolling(200);
 
-        Correlator correlator(100000, (1ULL << 16));
+        Correlator correlator(100000, (1ULL << 20));
         Orchestrator orchstrator(fs, device_bme_2, 0.0, device_bme_4, 0.0, correlator, 
                                 "C:\\Users\\MCL\\Documents\\VargaPatrik\\Quantum\\data", 5.0);
 
@@ -230,12 +261,22 @@ int main(int argc, char **argv)
                 sendbuf = orchstrator.runNextStep();
             }
 
+            if(fs.is_same_str(sendbuf.c_str(), "clear")){
+                orchstrator.clearDataFolder();
+            }
+
             //setup parancs elokesziti a muszereket a meresre
             if(fs.is_same_str(sendbuf.c_str(), "setup")){
                 fs.measure_setup();
                 path.clear();
                 path << "\"" << pathbuffer << "\\timetagger_setup.py\"";
                 fs.run(path.str());
+            }
+
+            if(fs.is_same_str(sendbuf.c_str(), "run_correlator")){
+                correlator.runCorrelation(false, 
+                    collectFiles("C:\\Users\\MCL\\Documents\\VargaPatrik\\Quantum\\data", "bme"), 
+                    std::vector<std::string>(), 2048);
             }
 
             if(fs.is_same_str(sendbuf.c_str(), "start")){
@@ -250,6 +291,38 @@ int main(int argc, char **argv)
                 closesocket(ConnectSocket);
                 WSACleanup();
                 return 1;
+            }
+
+            if(fs.is_same_str(sendbuf.c_str(), "read_correlator_buffer")){
+                std::this_thread::sleep_for(std::chrono::seconds(2)); //wait for file to be ready
+
+                while (true) {
+                    char header[3];
+                    int headerResult = recvAll(ConnectSocket, header, 3);
+                    
+                    int messageSize = ((unsigned char)header[0] << 16) |
+                                    ((unsigned char)header[1] << 8) |
+                                    (unsigned char)header[2];
+
+                    std::cout << "Header size: " << messageSize << std::endl;
+                    
+                    std::vector<char> buffer(messageSize);
+                    int bodyResult = recvAll(ConnectSocket, buffer.data(), messageSize);
+                    
+                    // Check for EOT
+                    std::string message(buffer.begin(), buffer.end());
+                    if (message == "EOT") {
+                        std::cout << "Finished receiving files." << std::endl;
+                        break;
+                    }
+                    
+                    // This must be the first chunk of a file - pass it to the receiver
+                    std::cout << "Buffer header received" << std::endl;
+                    char* fftwBuffer = readFftwBuffer(ConnectSocket, buffer, messageSize);
+                    correlator.read_data_vector(fftwBuffer);
+
+                    delete[] fftwBuffer;
+                }
             }
 
             else if(sendbuf.find("read_data_file") != std::string::npos){

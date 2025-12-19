@@ -28,10 +28,12 @@ std::vector<std::string> collectFiles(const std::string& folder, const std::stri
 }
 
 int main(int argc, char* argv[]) {
-    Correlator correlator(100000, (1ULL << 16));
+    Correlator correlator(100000, (1ULL << 20));
+
+    correlator.Tshift = 0;
 
     std::vector<std::string> files_bme = collectFiles("../data", "timestamps_bme");
     std::vector<std::string> files_wigner = collectFiles("../data", "timestamps_wigner");
 
-    correlator.runCorrelation(true, files_bme, files_wigner, 2000);
+    correlator.runCorrelation(true, files_bme, files_wigner, 2048);
 }
