@@ -5,6 +5,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import logging
 import json
 import os
+import time
 from datetime import datetime
 import numpy as np
 
@@ -58,6 +59,8 @@ class App:
         
         # Show connection dialog
         self._setup_peer_connection()
+        
+
 
         # Initialize Time Controller
         self.tc = self._connect_time_controller()
@@ -115,18 +118,6 @@ class App:
                     server_ip=server_ip,
                     port=config['port']
                 )
-                
-                # Register command handlers
-                self.peer_connection.register_command_handler('OPTIMIZE_START', self._handle_remote_optimize_start)
-                self.peer_connection.register_command_handler('OPTIMIZE_STOP', self._handle_remote_optimize_stop)
-                self.peer_connection.register_command_handler('STATUS_UPDATE', self._handle_remote_status_update)
-                self.peer_connection.register_command_handler('PROGRESS_UPDATE', self._handle_remote_progress_update)
-                self.peer_connection.register_command_handler('STREAMING_START', self._handle_remote_streaming_start)
-                self.peer_connection.register_command_handler('STREAMING_STOP', self._handle_remote_streaming_stop)
-                self.peer_connection.register_command_handler('TIMESTAMP_BATCH', self._handle_remote_timestamp_batch)
-                self.peer_connection.register_command_handler('COUNTER_DATA', self._handle_remote_counter_data)
-                self.peer_connection.register_command_handler('SAVE_SETTINGS_UPDATE', self._handle_save_settings_update)
-                self.peer_connection.register_command_handler('SAVE_SETTINGS_REQUEST', self._handle_save_settings_request)
                 
                 # Start connection (server listens, client connects)
                 if self.peer_connection.start():
@@ -219,139 +210,24 @@ class App:
         
         return tc
 
-    def _handle_remote_optimize_start(self, data: dict):
-        """Handle remote optimization start command."""
-        remote_row_idx = data.get('row_index', 0)
-        local_row_idx = remote_row_idx - 4  # Map 4-7 to 0-3
-        
-        if local_row_idx in self.optim_rows:
-            row = self.optim_rows[local_row_idx]
-            if not row.is_remote:
-                row.channel_box.set(data.get('channel', 1))
-                if data.get('serial'):
-                    row.serial_var.set(data['serial'])
-                row._on_start()
-    
-    def _handle_remote_optimize_stop(self, data: dict):
-        """Handle remote optimization stop command."""
-        local_row_idx = data.get('row_index', 0) - 4  # Map 4-7 to 0-3
-        
-        if local_row_idx in self.optim_rows:
-            row = self.optim_rows[local_row_idx]
-            if not row.is_remote:
-                row._on_stop()
-    
-    def _handle_remote_status_update(self, data: dict):
-        """Handle status update from remote peer."""
-        remote_row_idx = data.get('row_index', 0) + 4  # Map 0-3 to 4-7
-        
-        if remote_row_idx in self.optim_rows:
-            self.optim_rows[remote_row_idx].handle_remote_status(data)
-    
-    def _handle_remote_progress_update(self, data: dict):
-        """Handle progress update from remote peer."""
-        remote_row_idx = data.get('row_index', 0) + 4  # Map 0-3 to 4-7
-        
-        if remote_row_idx in self.optim_rows:
-            self.optim_rows[remote_row_idx].handle_remote_progress(data)
-    
-    def _handle_remote_timestamp_batch(self, data: dict):
-        """Handle timestamp batch received from remote peer.
-        
-        This receives batches of timestamps from the remote site
-        and passes them to the plot updater for coincidence calculation.
-        """
-        try:
-            import base64
-            import zlib
-            
-            if not isinstance(data, dict) or 'timestamps' not in data:
-                logger.warning("Invalid timestamp batch format")
-                return
-            
-            timestamps = data['timestamps']
-            total_received = 0
-            
-            # Add timestamps to remote buffers
-            for channel_str, ts_data in timestamps.items():
-                channel = int(channel_str)
-                if channel in [1, 2, 3, 4] and isinstance(ts_data, dict):
-                    # Decompress binary timestamp data
-                    encoded = ts_data.get('data', '')
-                    count = ts_data.get('count', 0)
-                    
-                    if encoded and count > 0:
-                        # Decode base64 -> decompress -> convert to numpy array
-                        compressed = base64.b64decode(encoded)
-                        binary = zlib.decompress(compressed)
-                        ts_array = np.frombuffer(binary, dtype=np.uint64)
-                        
-                        self.plot_updater.remote_buffers[channel].add_timestamps_array(ts_array)
-                        total_received += len(ts_array)
-            
-            logger.debug(f"Received timestamp batch: {total_received} total timestamps")
-        except Exception as e:
-            logger.error(f"Error handling remote timestamp batch: {e}")
-    
-    def _handle_remote_counter_data(self, data: dict):
-        """Handle detector counter data received from remote peer."""
-        try:
-            counters = data.get('counters', [0, 0, 0, 0])
-            if len(counters) == 4:
-                self.remote_beutes_szamok = counters
-        except Exception as e:
-            logger.error("Error handling remote counter data: %s", e)
-    
-    def _handle_remote_streaming_start(self, data: dict):
-        """Handle streaming start command from remote peer."""
-        logger.info("Received STREAMING_START command from peer - starting local streaming")
-        if hasattr(self, 'plot_updater') and self.plot_updater:
-            # Start local streaming when peer requests it
-            self.plot_updater.start()
-    
-    def _handle_remote_streaming_stop(self, data: dict):
-        """Handle streaming stop command from remote peer."""
-        logger.info("Received STREAMING_STOP command from peer - stopping local streaming")
-        if hasattr(self, 'plot_updater') and self.plot_updater:
-            # Stop local streaming when peer requests it (but keep counter display running)
-            self.plot_updater.stop_streaming()
-    
-    def _handle_save_settings_update(self, data: dict):
-        """Handle save settings update from remote peer (they're telling us what they're saving)."""
-        try:
-            save_channels = data.get('save_channels', [])
-            logger.info(f"Received save settings from peer: {save_channels}")
-            
-            # Update remote checkboxes to reflect peer's settings
-            if hasattr(self, 'remote_save_vars'):
-                for i in range(4):
-                    channel = i + 1
-                    should_save = channel in save_channels
-                    self.remote_save_vars[i].set(should_save)
-        except Exception as e:
-            logger.error(f"Error handling save settings update: {e}")
-    
-    def _handle_save_settings_request(self, data: dict):
-        """Handle request from peer to change our local save settings."""
-        try:
-            save_channels = data.get('save_channels', [])
-            logger.info(f"Peer requested we update our save settings to: {save_channels}")
-            
-            # Update our local checkboxes based on peer's request
-            if hasattr(self, 'local_save_vars'):
-                for i in range(4):
-                    channel = i + 1
-                    should_save = channel in save_channels
-                    self.local_save_vars[i].set(should_save)
-                
-                # After updating, send back confirmation
-                self._on_local_save_changed()
-        except Exception as e:
-            logger.error(f"Error handling save settings request: {e}")
     
     def _on_start_streaming(self):
         """Start streaming on both local and remote sites."""
         logger.info("Starting synchronized streaming on both sites")
+        
+        # Get recording duration (parse from text entry)
+        duration_str = self.duration_var.get().strip()
+        recording_duration_sec = None
+        if duration_str:
+            try:
+                recording_duration_sec = int(duration_str)
+                if recording_duration_sec <= 0:
+                    recording_duration_sec = None
+                else:
+                    logger.info(f"Recording duration set to {recording_duration_sec} seconds")
+            except ValueError:
+                logger.warning(f"Invalid duration '{duration_str}', using unlimited")
+                recording_duration_sec = None
         
         # Get save settings from checkboxes
         local_save_channels = [i+1 for i in range(4) if self.local_save_vars[i].get()]
@@ -360,36 +236,91 @@ class App:
         logger.info(f"Saving local channels: {local_save_channels}")
         logger.info(f"Saving remote channels: {remote_save_channels}")
         
-        # Start local streaming with save settings
+        # Start local streaming with save settings and duration
         if hasattr(self, 'plot_updater') and self.plot_updater:
             self.plot_updater.start(local_save_channels=local_save_channels, 
-                                   remote_save_channels=remote_save_channels)
+                                   remote_save_channels=remote_save_channels,
+                                   recording_duration_sec=recording_duration_sec)
         
-        # Send command to peer to start streaming
+        # Start recording timer display
+        if recording_duration_sec:
+            self.recording_start_time = time.time()
+            self.recording_duration = recording_duration_sec
+            self._update_recording_timer()
+        
+        # Send command to peer to start streaming (include duration)
         if self.peer_connection and self.peer_connection.is_connected():
             try:
-                self.peer_connection.send_command('STREAMING_START', {})
+                self.peer_connection.send_command('STREAMING_START', {
+                    'duration_sec': recording_duration_sec
+                })
                 logger.info("Sent STREAMING_START command to peer")
             except Exception as e:
                 logger.error(f"Failed to send STREAMING_START to peer: {e}")
         else:
             logger.warning("No peer connection - streaming locally only")
     
-    def _on_stop_streaming(self):
+    def _handle_remote_streaming_start(self, data):
+        """Handle STREAMING_START command from peer."""
+        duration_sec = data.get('duration_sec')
+        logger.info(f"Received STREAMING_START from peer with duration: {duration_sec}")
+        
+        # Update duration field in UI to match remote side
+        if duration_sec:
+            self.duration_var.set(str(duration_sec))
+            logger.info(f"Updated duration UI field to {duration_sec} seconds")
+        else:
+            self.duration_var.set("0")
+            logger.info("Updated duration UI field to 0 (unlimited)")
+        
+        # Get save settings from checkboxes
+        local_save_channels = [i+1 for i in range(4) if self.local_save_vars[i].get()]
+        remote_save_channels = [i+1 for i in range(4) if self.remote_save_vars[i].get()] if self.remote_save_vars else []
+        
+        # Start local streaming with the same duration
+        if hasattr(self, 'plot_updater') and self.plot_updater:
+            self.plot_updater.start(local_save_channels=local_save_channels, 
+                                   remote_save_channels=remote_save_channels,
+                                   recording_duration_sec=duration_sec)
+        
+        # Start recording timer display
+        if duration_sec:
+            self.recording_start_time = time.time()
+            self.recording_duration = duration_sec
+            self._update_recording_timer()
+    
+    def _handle_remote_streaming_stop(self, data):
+        """Handle STREAMING_STOP command from peer."""
+        logger.info("Received STREAMING_STOP from peer")
+        # Stop locally but don't send back to peer (avoid infinite loop)
+        self._on_stop_streaming(send_to_peer=False)
+    
+    def _on_stop_streaming(self, send_to_peer=True):
         """Stop streaming on both local and remote sites."""
         logger.info("Stopping synchronized streaming on both sites")
+        
+        # Clear recording timer
+        self.recording_start_time = None
+        self.recording_duration = None
+        self.recording_timer_label.config(text="")
         
         # Stop local streaming (but keep counter display running)
         if hasattr(self, 'plot_updater') and self.plot_updater:
             self.plot_updater.stop_streaming()
         
-        # Send command to peer to stop streaming
-        if self.peer_connection and self.peer_connection.is_connected():
+        # Send command to peer to stop streaming (only if initiated locally)
+        if send_to_peer and self.peer_connection and self.peer_connection.is_connected():
             try:
                 self.peer_connection.send_command('STREAMING_STOP', {})
                 logger.info("Sent STREAMING_STOP command to peer")
             except Exception as e:
                 logger.error(f"Failed to send STREAMING_STOP to peer: {e}")
+        
+        # Auto-transfer files if checkbox is checked
+        if hasattr(self, 'auto_transfer_var') and self.auto_transfer_var and self.auto_transfer_var.get():
+            logger.info("Auto-transfer enabled - requesting remote files")
+            # Delay slightly to ensure peer has finished writing files
+            self.root.after(1000, self._request_remote_files)
     
     def _setup_layout(self):
         """Configure root window layout."""
@@ -504,6 +435,13 @@ class App:
             peer_connection=self.peer_connection,
             app_ref=self  # Pass reference to access correlation pairs and remote data
         )
+        
+        # Register command handler for remote streaming start
+        if self.peer_connection:
+            self.peer_connection.register_command_handler('STREAMING_START', 
+                                                         self._handle_remote_streaming_start)
+            self.peer_connection.register_command_handler('STREAMING_STOP', 
+                                                         self._handle_remote_streaming_stop)
 
         # Build control panel
         self._build_plot_controls()
@@ -534,6 +472,19 @@ class App:
             command=self._on_stop_streaming
         )
         btn_stop.grid(row=0, column=2, sticky="news")
+        
+        # Recording duration input (custom seconds)
+        tk.Label(controls, text="Duration (sec):").grid(row=0, column=3, sticky="e", padx=(10, 2))
+        self.duration_var = tk.StringVar(value="")
+        duration_entry = tk.Entry(controls, textvariable=self.duration_var, width=10)
+        duration_entry.grid(row=0, column=4, sticky="w", padx=2)
+        tk.Label(controls, text="(0 = ∞)", font=('Arial', 8), foreground='gray').grid(
+            row=0, column=5, sticky="w", padx=2)
+        
+        # Recording timer display
+        self.recording_timer_label = tk.Label(controls, text="", width=20, 
+                                             font=('Arial', 10, 'bold'), foreground='green')
+        self.recording_timer_label.grid(row=0, column=6, sticky="w", padx=10)
         
         cb_hist = tk.Checkbutton(
             controls, text='Hisztogram', onvalue=True, offvalue=False,
@@ -771,12 +722,37 @@ class App:
                                   command=lambda: self._on_remote_save_changed())
                 cb.grid(row=3, column=i, sticky="news")
                 self.remote_save_vars.append(save_var)
+            
+            # File transfer controls
+            transfer_frame = tk.Frame(remote_counters, background='#E3F2FD')
+            transfer_frame.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(5, 5))
+            
+            self.auto_transfer_var = tk.BooleanVar(value=False)
+            tk.Checkbutton(transfer_frame, text='Auto-transfer files after recording',
+                          variable=self.auto_transfer_var, background='#E3F2FD',
+                          font=('Arial', 8, 'bold')).pack(side=tk.TOP, pady=2)
+            
+            tk.Button(transfer_frame, text="📥 Request Remote Files",
+                     background='#2196F3', foreground='white',
+                     font=('Arial', 9, 'bold'), width=25,
+                     command=self._request_remote_files).pack(side=tk.TOP, pady=2)
+            
+            self.transfer_status_label = tk.Label(transfer_frame, text="",
+                                                   background='#E3F2FD',
+                                                   font=('Arial', 8), foreground='#555')
+            self.transfer_status_label.pack(side=tk.TOP, pady=2)
         else:
             self.remote_beutes_labels = []
             self.remote_save_vars = []
+            self.auto_transfer_var = None
+            self.transfer_status_label = None
 
         # Store remote counter values (received from peer)
         self.remote_beutes_szamok = [0, 0, 0, 0]
+        
+        # Recording timer state
+        self.recording_start_time = None
+        self.recording_duration = None
         
         # Send initial save settings to peer
         self.root.after(1000, self._send_initial_save_settings)
@@ -827,6 +803,21 @@ class App:
         else:
             logger.warning("No peer connection - cannot change remote save settings")
     
+    def _request_remote_files(self):
+        """Request timestamp files from remote peer."""
+        if self.file_transfer_manager:
+            self.file_transfer_manager.request_remote_files()
+        else:
+            logger.error("File transfer manager not initialized")
+    
+    def _update_transfer_status(self, text: str, color: str = 'black'):
+        """Update transfer status label (callback for FileTransferManager)."""
+        if hasattr(self, 'transfer_status_label') and self.transfer_status_label:
+            try:
+                self.transfer_status_label.config(text=text, foreground=color)
+            except Exception:
+                pass
+    
     def _update_counters(self):
         """Periodically update counter labels from plot updater."""
         # Update local counters
@@ -852,6 +843,35 @@ class App:
         
         if self.root.winfo_exists():
             self._after_id = self.root.after(300, self._update_counters)
+    
+    def _update_recording_timer(self):
+        """Update recording timer countdown display."""
+        if not self.recording_start_time or not self.recording_duration:
+            return
+        
+        elapsed = time.time() - self.recording_start_time
+        remaining = max(0, self.recording_duration - elapsed)
+        
+        if remaining > 0:
+            # Update display
+            mins = int(remaining // 60)
+            secs = int(remaining % 60)
+            self.recording_timer_label.config(
+                text=f"⏱️ Recording: {mins:02d}:{secs:02d}",
+                foreground='red'
+            )
+            
+            # Schedule next update
+            if self.root.winfo_exists():
+                self.root.after(100, self._update_recording_timer)
+        else:
+            # Time's up! Auto-stop
+            logger.info("Recording duration completed - auto-stopping")
+            self.recording_timer_label.config(
+                text="✅ Recording Complete",
+                foreground='green'
+            )
+            self._on_stop_streaming()
 
 
     def _build_polarizer_tab(self):
