@@ -9,8 +9,8 @@ from typing import Optional
 from pathlib import Path
 
 from mock_time_controller import safe_zmq_exec
-from utils.timestamp_stream import TimestampBuffer, CoincidenceCounter
-from utils.stream_client import TimeControllerStreamClient
+from streaming.timestamp_stream import TimestampBuffer, CoincidenceCounter
+from streaming.stream_client import TimeControllerStreamClient
 from gui_components.config import (
     COINCIDENCE_WINDOW_PS,
     TIMESTAMP_BUFFER_DURATION_SEC,
@@ -250,6 +250,7 @@ class PlotUpdater:
         # NOTE: In practice, the DLT/TC streaming ports may be single-consumer or not usable
         # in parallel with DLT saving. Since DLT is already writing the timestamps to files,
         # we tail those files for reliable live updates.
+        # DISABLED: File tailing and streaming disabled to prevent crashes during development
         if is_mock:
             self.stream_client = TimeControllerStreamClient(tc_address, is_mock=True)
             for channel in [1, 2, 3, 4]:
@@ -257,8 +258,9 @@ class PlotUpdater:
                 self.stream_client.start_stream(channel, callback, port=None)
         else:
             self.stream_client = None
-            self._start_file_tail_threads()
-        logger.info("Timestamp streaming started for all channels")
+            # DISABLED: self._start_file_tail_threads()  # Disabled to prevent crashes
+            logger.warning("File tailing DISABLED - timestamps will only be saved to files")
+        logger.info("Timestamp streaming started for all channels (file tailing disabled)")
     
     def stop_streaming(self):
         """Stop timestamp streaming and DLT acquisitions."""
@@ -469,13 +471,15 @@ class PlotUpdater:
         
         # Calculate coincidences from timestamp buffers
         if self.streaming_active:
-            self._calculate_coincidences()
+            # DISABLED: Coincidence calculation disabled (no live streaming)
+            # self._calculate_coincidences()
             
-            # Send timestamp batches to peer at regular intervals
-            current_time = time.time()
-            if current_time - self.last_batch_send_time >= TIMESTAMP_BATCH_INTERVAL_SEC:
-                self._send_timestamp_batch_to_peer()
-                self.last_batch_send_time = current_time
+            # DISABLED: Timestamp batch sending disabled to prevent TCP overload
+            # current_time = time.time()
+            # if current_time - self.last_batch_send_time >= TIMESTAMP_BATCH_INTERVAL_SEC:
+            #     self._send_timestamp_batch_to_peer()
+            #     self.last_batch_send_time = current_time
+            pass
         else:
             # Not streaming yet, show placeholder
             pass
@@ -602,12 +606,20 @@ class PlotUpdater:
         # Draw coincidence plot (or placeholder if not streaming yet)
         if not self.plot_histogram:
             if self.streaming_active:
-                self._draw_coincidence_plot()
+                # Show recording status instead of live plot (streaming disabled)
+                self.ax.text(0.5, 0.5, 
+                            '📹 Recording in Progress\n\n'
+                            'Timestamps are being saved to files\n'
+                            'Live streaming disabled\n\n'
+                            'Use offline analysis after recording completes',
+                            ha='center', va='center', transform=self.ax.transAxes,
+                            fontsize=12, bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.5))
             else:
                 # Show message when not streaming
                 self.ax.text(0.5, 0.5, 
                             'Timestamp Streaming Not Started\n\n'
-                            'Click "Start Streaming" to begin real-time coincidence counting',
+                            'Click "Start" to begin recording\n'
+                            '(Live streaming disabled - files only)',
                             ha='center', va='center', transform=self.ax.transAxes,
                             fontsize=12, bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.5))
         else:
@@ -639,16 +651,23 @@ class PlotUpdater:
         self.thread.start()
         logger.info("Counter display started (streaming not active)")
     
-    def start(self, local_save_channels: list = None, remote_save_channels: list = None):
+    def start(self, local_save_channels: list = None, remote_save_channels: list = None, 
+              recording_duration_sec: int = None):
         """Start the full measurement: timestamp streaming + coincidence calculations.
         
         Args:
             local_save_channels: List of local channels to save to files (default: all [1,2,3,4])
             remote_save_channels: List of remote channels to save to files (default: none [])
+            recording_duration_sec: Optional recording duration in seconds (None = unlimited)
         """
         if self.streaming_active:
             logger.warning("Streaming already active")
             return
+        
+        # Store duration for reference (auto-stop handled by main_gui)
+        self.recording_duration_sec = recording_duration_sec
+        if recording_duration_sec:
+            logger.info(f"Recording will run for {recording_duration_sec} seconds")
         
         # Start counter display if not already running
         if not self.continue_update:
