@@ -192,42 +192,56 @@ void sendFile(SOCKET clientSocket, const std::string& filePath) {
 }
 
 void sendFftwBuffer(SOCKET socket, Correlator& correlator) {
-    size_t totalSize = correlator.buff2_size;
+    // Calculate the actual byte size of the complex buffer
+    // fftw_complex is typedef double[2], so each element is 2 doubles
+    size_t num_elements = correlator.N;  // Use N, not buff2_size
+    size_t element_size = sizeof(fftw_complex);  // sizeof(double[2]) = 16 bytes
+    size_t totalBytes = num_elements * element_size;
+    
+    std::cout << "Sending FFTW buffer: " << num_elements << " complex elements = " 
+              << totalBytes << " bytes" << std::endl;
+    
+    // Cast the FFTW buffer to bytes
     char* bufferPtr = reinterpret_cast<char*>(correlator.buff2);
-
-    // Send in chunks with 3-byte headers
+    
     const size_t CHUNK_SIZE = DEFAULT_BUFLEN;
-    std::vector<char> sendBuffer(CHUNK_SIZE);
-
     size_t bytesSent = 0;
-    while(bytesSent < totalSize) {
-        size_t bytesToSend = std::min(CHUNK_SIZE, totalSize - bytesSent);
-
-        // Prepare header
+    
+    while (bytesSent < totalBytes) {
+        size_t bytesToSend = std::min(CHUNK_SIZE, totalBytes - bytesSent);
+        
+        // Send 3-byte header
         char header[3];
         header[0] = (bytesToSend >> 16) & 0xFF;
         header[1] = (bytesToSend >> 8) & 0xFF;
         header[2] = bytesToSend & 0xFF;
-
-        // Send header
-        int result = send(socket, header, 3, 0);
-        if (result == SOCKET_ERROR) {
+        
+        if (send(socket, header, 3, 0) == SOCKET_ERROR) {
             std::cerr << "Failed to send header. Error: " << WSAGetLastError() << std::endl;
             return;
         }
-
-        // Copy data to send buffer
-        sendBuffer.insert(sendBuffer.begin(), bufferPtr + bytesSent, bufferPtr + bytesSent + bytesToSend);
-
-        // Send data
-        result = send(socket, sendBuffer.data(), bytesToSend, 0);
-        if (result == SOCKET_ERROR) {
+        
+        // Send the actual data chunk (no copying needed)
+        if (send(socket, bufferPtr + bytesSent, bytesToSend, 0) == SOCKET_ERROR) {
             std::cerr << "Failed to send data. Error: " << WSAGetLastError() << std::endl;
             return;
         }
-
+        
         bytesSent += bytesToSend;
+        std::cout << "Sent " << bytesSent << " / " << totalBytes << " bytes" << std::endl;
     }
+    
+    // Send EOF marker
+    std::string eofMarker = "EOF";
+    char eofHeader[3];
+    eofHeader[0] = (eofMarker.size() >> 16) & 0xFF;
+    eofHeader[1] = (eofMarker.size() >> 8) & 0xFF;
+    eofHeader[2] = eofMarker.size() & 0xFF;
+    
+    send(socket, eofHeader, 3, 0);
+    send(socket, eofMarker.c_str(), eofMarker.size(), 0);
+    
+    std::cout << "FFTW buffer sent successfully" << std::endl;
 }
 
 int main(void) 
@@ -375,26 +389,49 @@ int main(void)
                     send(ClientSocket, eotMarker.c_str(), eotMarker.size(), 0);
                 }
 
-                if(fs.is_same_str(recvbuf, "read_correlator_buffer")){
+                if (fs.is_same_str(recvbuf, "read_correlator_buffer")) {
+                    std::cout << "Processing read_correlator_buffer command..." << std::endl;
                     
+                    // Allocate buffer
                     correlator.buff2 = fftw_alloc_complex(correlator.N);
-
-                    correlator.copyFiles(collectFiles("C:\\Users\\MCL\\Documents\\VargaPatrik\\Quantum\\data", "wigner"), correlator.modifiable_dataset2, 0);
-                    correlator.buff2_size = correlator.read_data(correlator.modifiable_dataset2, 2, 2048, correlator.chunk_size, 
-                                            correlator.N, correlator.h2, correlator.h2d, Nbin, correlator.Tbin, 0);
-
+                    if (!correlator.buff2) {
+                        std::cerr << "Failed to allocate FFTW buffer" << std::endl;
+                        sendDoneMessage();
+                        return;
+                    }
+                    
+                    // Copy and read data
+                    std::vector<std::string> files = collectFiles("C:\\Users\\MCL\\Documents\\VargaPatrik\\Quantum\\data", "wigner");
+                    correlator.copyFiles(files, correlator.modifiable_dataset2, 0);
+                    
+                    correlator.buff2_size = correlator.read_data(
+                        correlator.modifiable_dataset2, 
+                        2,                      // buffId
+                        2048,                   // tau
+                        correlator.chunk_size, 
+                        correlator.N, 
+                        correlator.h2, 
+                        correlator.h2d, 
+                        Nbin, 
+                        correlator.Tbin, 
+                        0                       // Tshift
+                    );
+                    
+                    std::cout << "Read " << correlator.buff2_size << " timestamps into buffer" << std::endl;
+                    
+                    // Send the buffer
                     sendFftwBuffer(ClientSocket, correlator);
-
-                    //Send end-of-transmission marker
+                    
+                    // Send EOT
                     std::string eotMarker = "EOT";
                     char eotHeader[3];
                     eotHeader[0] = (eotMarker.size() >> 16) & 0xFF;
                     eotHeader[1] = (eotMarker.size() >> 8) & 0xFF;
                     eotHeader[2] = eotMarker.size() & 0xFF;
-
                     send(ClientSocket, eotHeader, 3, 0);
                     send(ClientSocket, eotMarker.c_str(), eotMarker.size(), 0);
-
+                    
+                    // Cleanup
                     fftw_free(correlator.buff2);
                     correlator.buff2 = nullptr;
                 }

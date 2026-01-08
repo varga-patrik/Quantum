@@ -116,9 +116,14 @@ void readReceivingFile(SOCKET socket, const std::vector<char>& firstChunk, int f
     outFile.close();
 }
 
-char* readFftwBuffer(SOCKET socket, const std::vector<char>& firstChunk, int firstChunkSize) {
+fftw_complex* readFftwBuffer(SOCKET socket, const std::vector<char>& firstChunk, 
+                             int firstChunkSize, size_t N) {
     std::vector<char> allData;
+    
+    // Add first chunk
     allData.insert(allData.end(), firstChunk.begin(), firstChunk.begin() + firstChunkSize);
+    
+    std::cout << "First chunk: " << firstChunkSize << " bytes" << std::endl;
     
     char header[3];
     while (true) {
@@ -132,18 +137,36 @@ char* readFftwBuffer(SOCKET socket, const std::vector<char>& firstChunk, int fir
         if (recvAll(socket, buffer.data(), readCount) <= 0) break;
         
         // Check for EOF marker
-        const std::string eofMarker = "EOF";
-        if (readCount == eofMarker.size() &&
-            std::equal(eofMarker.begin(), eofMarker.end(), buffer.begin())) {
-            break; // End of FFTW buffer
+        std::string chunk(buffer.begin(), buffer.end());
+        if (chunk == "EOF") {
+            std::cout << "EOF marker received" << std::endl;
+            break;
         }
         
+        // Append data
         allData.insert(allData.end(), buffer.begin(), buffer.end());
+        std::cout << "Received chunk: " << readCount << " bytes, total: " 
+                  << allData.size() << " bytes" << std::endl;
     }
     
-    size_t totalSize = allData.size();
-    char* fftwBuffer = new char[totalSize];
-    std::copy(allData.begin(), allData.end(), fftwBuffer);
+    // Verify size
+    size_t expected_size = N * sizeof(fftw_complex);
+    if (allData.size() != expected_size) {
+        std::cerr << "WARNING: Received " << allData.size() << " bytes, expected " 
+                  << expected_size << " bytes" << std::endl;
+    }
+    
+    // Allocate and copy to FFTW buffer
+    fftw_complex* fftwBuffer = fftw_alloc_complex(N);
+    if (!fftwBuffer) {
+        std::cerr << "Failed to allocate FFTW buffer" << std::endl;
+        return nullptr;
+    }
+    
+    // Copy data
+    std::memcpy(fftwBuffer, allData.data(), allData.size());
+    
+    std::cout << "FFTW buffer reconstructed: " << N << " complex elements" << std::endl;
     return fftwBuffer;
 }
 
@@ -293,36 +316,66 @@ int main(int argc, char **argv)
                 return 1;
             }
 
-            if(fs.is_same_str(sendbuf.c_str(), "read_correlator_buffer")){
-                std::this_thread::sleep_for(std::chrono::seconds(2)); //wait for file to be ready
-
+            if (fs.is_same_str(sendbuf.c_str(), "read_correlator_buffer")) {
+                std::cout << "Requesting correlator buffer from server..." << std::endl;
+                
+                // Send command
+                iResult = send(ConnectSocket, sendbuf.c_str(), DEFAULT_BUFLEN, 0);
+                if (iResult == SOCKET_ERROR) {
+                    printf("send failed with error: %d\n", WSAGetLastError());
+                    closesocket(ConnectSocket);
+                    WSACleanup();
+                    return 1;
+                }
+                
+                std::this_thread::sleep_for(std::chrono::seconds(2));
+                
+                // Receive the buffer
                 while (true) {
                     char header[3];
                     int headerResult = recvAll(ConnectSocket, header, 3);
+                    if (headerResult <= 0) break;
                     
                     int messageSize = ((unsigned char)header[0] << 16) |
                                     ((unsigned char)header[1] << 8) |
                                     (unsigned char)header[2];
-
-                    std::cout << "Header size: " << messageSize << std::endl;
                     
                     std::vector<char> buffer(messageSize);
                     int bodyResult = recvAll(ConnectSocket, buffer.data(), messageSize);
+                    if (bodyResult <= 0) break;
                     
                     // Check for EOT
                     std::string message(buffer.begin(), buffer.end());
                     if (message == "EOT") {
-                        std::cout << "Finished receiving files." << std::endl;
+                        std::cout << "Finished receiving buffer." << std::endl;
                         break;
                     }
                     
-                    // This must be the first chunk of a file - pass it to the receiver
-                    std::cout << "Buffer header received" << std::endl;
-                    char* fftwBuffer = readFftwBuffer(ConnectSocket, buffer, messageSize);
-                    correlator.read_data_vector(fftwBuffer);
-
-                    delete[] fftwBuffer;
+                    // This is the start of the FFTW buffer
+                    std::cout << "Receiving FFTW buffer..." << std::endl;
+                    fftw_complex* receivedBuffer = readFftwBuffer(ConnectSocket, buffer, messageSize, correlator.N);
+                    
+                    if (receivedBuffer) {
+                        // Copy to correlator's buff2
+                        if (!correlator.buff2) {
+                            correlator.buff2 = fftw_alloc_complex(correlator.N);
+                        }
+                        
+                        std::memcpy(correlator.buff2, receivedBuffer, correlator.N * sizeof(fftw_complex));
+                        correlator.buff2_size = correlator.N;  // Or whatever size is appropriate
+                        
+                        fftw_free(receivedBuffer);
+                        
+                        std::cout << "Buffer successfully copied to correlator" << std::endl;
+                    } else {
+                        std::cerr << "Failed to receive FFTW buffer" << std::endl;
+                    }
+                    
+                    break;  // Only expecting one buffer
                 }
+                
+                // Wait for done
+                WaitForCommandDone(ConnectSocket);
             }
 
             else if(sendbuf.find("read_data_file") != std::string::npos){
