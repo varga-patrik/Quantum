@@ -84,6 +84,7 @@ class PlotUpdater:
         
         # Batch sending for peer exchange
         self.last_batch_send_time = time.time()
+        self.last_sent_counts = {1: 0, 2: 0, 3: 0, 4: 0}  # Track how many timestamps we've already sent per channel
 
     def start_streaming(self, tc_address: str, is_mock: bool = False, 
                        local_save_channels: list = None, remote_save_channels: list = None):
@@ -321,10 +322,32 @@ class PlotUpdater:
 
     def _start_file_tail_threads(self):
         """Start background readers that tail the DLT output files and fill local buffers."""
-        # Reset offsets & stop flag
+        # Reset stop flag
         self._file_tail_stop_event.clear()
+        
+        # Set offsets to END of existing files (to skip old data from previous recordings)
         for ch in [1, 2, 3, 4]:
-            self._file_tail_offsets[ch] = 0
+            acq = getattr(self, 'acquisition_ids', {}).get(ch)
+            filepath = None
+            if isinstance(acq, dict):
+                filepath = acq.get('filepath')
+            
+            if filepath:
+                try:
+                    path = Path(filepath)
+                    if path.exists():
+                        # Seek to end of file to only read NEW data
+                        file_size = path.stat().st_size
+                        # Align to 16-byte boundary (timestamp pairs are 2x uint64 = 16 bytes)
+                        self._file_tail_offsets[ch] = (file_size // 16) * 16
+                        logger.info(f"Ch{ch}: File-tail starting at offset {self._file_tail_offsets[ch]} (skipping existing data)")
+                    else:
+                        self._file_tail_offsets[ch] = 0
+                except Exception as e:
+                    logger.warning(f"Ch{ch}: Could not get file size: {e}, starting at 0")
+                    self._file_tail_offsets[ch] = 0
+            else:
+                self._file_tail_offsets[ch] = 0
 
         for channel in [1, 2, 3, 4]:
             t = threading.Thread(
@@ -425,26 +448,32 @@ class PlotUpdater:
             import base64
             import zlib
             
-            # Send ALL timestamps - no limits
+            # Send only NEW timestamps since last batch (prevent re-sending same data)
             # Collect timestamps from all channels as compressed binary
             batch_data = {}
             total_ts = 0
             for channel in [1, 2, 3, 4]:
-                timestamps = self.local_buffers[channel].get_timestamps()
-                if len(timestamps) > 0:
-                    # Send ALL timestamps in buffer (no limit)
+                all_timestamps = self.local_buffers[channel].get_timestamps()
+                
+                # Only send NEW timestamps since last batch
+                last_sent = self.last_sent_counts[channel]
+                new_timestamps = all_timestamps[last_sent:]  # Slice from last sent position to end
+                
+                if len(new_timestamps) > 0:
+                    # Update tracking
+                    self.last_sent_counts[channel] = len(all_timestamps)
                     
                     # Convert to binary (much more efficient than JSON)
-                    binary = timestamps.tobytes()
+                    binary = new_timestamps.tobytes()
                     # Compress to reduce network load
                     compressed = zlib.compress(binary, level=1)  # Fast compression
                     # Encode as base64 for JSON transport
                     encoded = base64.b64encode(compressed).decode('ascii')
                     batch_data[channel] = {
                         'data': encoded,
-                        'count': len(timestamps)
+                        'count': len(new_timestamps)
                     }
-                    total_ts += len(timestamps)
+                    total_ts += len(new_timestamps)
             
             if batch_data and total_ts > 0:
                 # Send timestamp batch to peer
@@ -470,8 +499,8 @@ class PlotUpdater:
         
         # Calculate coincidences from timestamp buffers
         if self.streaming_active:
-            # DISABLED: Coincidence calculation disabled (no live streaming)
-            # self._calculate_coincidences()
+            # Calculate cross-site coincidences (both sites do this with their local+remote data)
+            self._calculate_coincidences()
             
             # ONE-WAY TCP: Only send timestamps from Wigner (server/computer_a) to BME (client/computer_b)
             # Wigner has ~10x fewer timestamps, so it's the sender
@@ -510,7 +539,7 @@ class PlotUpdater:
         # DEBUG: Log buffer sizes
         local_sizes = [len(self.local_buffers[ch].get_timestamps()) for ch in [1,2,3,4]]
         remote_sizes = [len(self.remote_buffers[ch].get_timestamps()) for ch in [1,2,3,4]]
-        logger.info(f"Buffer sizes - Local: {local_sizes}, Remote: {remote_sizes}")
+        logger.debug(f"Buffer sizes - Local: {local_sizes}, Remote: {remote_sizes}")
         
         # Calculate coincidences for each pair
         new_counts = []
@@ -518,12 +547,12 @@ class PlotUpdater:
             local_ts = self.local_buffers[local_ch].get_timestamps()
             remote_ts = self.remote_buffers[remote_ch].get_timestamps()
             
-            logger.info(f"Pair ({local_ch},{remote_ch}): local={len(local_ts)}, remote={len(remote_ts)}")
+            logger.debug(f"Pair ({local_ch},{remote_ch}): local={len(local_ts)}, remote={len(remote_ts)}")
             
             count = self.coincidence_counter.count_coincidences(
                 local_ts, remote_ts, time_offset_ps
             )
-            logger.info(f"Pair ({local_ch},{remote_ch}): count={count}")
+            logger.debug(f"Pair ({local_ch},{remote_ch}): count={count}")
             new_counts.append(count)
         
         # Update rolling window (shift left, add new value on right)
