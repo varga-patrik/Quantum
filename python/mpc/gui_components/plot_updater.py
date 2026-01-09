@@ -250,7 +250,6 @@ class PlotUpdater:
         # NOTE: In practice, the DLT/TC streaming ports may be single-consumer or not usable
         # in parallel with DLT saving. Since DLT is already writing the timestamps to files,
         # we tail those files for reliable live updates.
-        # DISABLED: File tailing and streaming disabled to prevent crashes during development
         if is_mock:
             self.stream_client = TimeControllerStreamClient(tc_address, is_mock=True)
             for channel in [1, 2, 3, 4]:
@@ -258,9 +257,9 @@ class PlotUpdater:
                 self.stream_client.start_stream(channel, callback, port=None)
         else:
             self.stream_client = None
-            # DISABLED: self._start_file_tail_threads()  # Disabled to prevent crashes
-            logger.warning("File tailing DISABLED - timestamps will only be saved to files")
-        logger.info("Timestamp streaming started for all channels (file tailing disabled)")
+            self._start_file_tail_threads()  # Read timestamps from DLT output files
+            logger.info("File tailing ENABLED - reading timestamps from DLT output files")
+        logger.info("Timestamp streaming started for all channels (file tailing enabled for live reading)")
     
     def stop_streaming(self):
         """Stop timestamp streaming and DLT acquisitions."""
@@ -474,12 +473,14 @@ class PlotUpdater:
             # DISABLED: Coincidence calculation disabled (no live streaming)
             # self._calculate_coincidences()
             
-            # DISABLED: Timestamp batch sending disabled to prevent TCP overload
-            # current_time = time.time()
-            # if current_time - self.last_batch_send_time >= TIMESTAMP_BATCH_INTERVAL_SEC:
-            #     self._send_timestamp_batch_to_peer()
-            #     self.last_batch_send_time = current_time
-            pass
+            # ONE-WAY TCP: Only send timestamps from Wigner (server/computer_a) to BME (client/computer_b)
+            # Wigner has ~10x fewer timestamps, so it's the sender
+            if self.app_ref and hasattr(self.app_ref, 'computer_role'):
+                if self.app_ref.computer_role == "computer_a":  # Wigner (server)
+                    current_time = time.time()
+                    if current_time - self.last_batch_send_time >= TIMESTAMP_BATCH_INTERVAL_SEC:
+                        self._send_timestamp_batch_to_peer()
+                        self.last_batch_send_time = current_time
         else:
             # Not streaming yet, show placeholder
             pass
