@@ -288,7 +288,7 @@ int main(void)
     int recvbuflen = DEFAULT_BUFLEN;
 
     //kapcsolat felepitese a gps oraval, output stringhez nem tartozik erdemi funkcio, azt korabban tesztelesre hasznaltam
-    std::string ip_text = "172.26.34.159";
+    std::string ip_text = "148.6.27.165";
     std::string output = "diff_data.csv";
     FSUtil fs(6000, ip_text, output);
 
@@ -410,18 +410,15 @@ int main(void)
                     std::string command, start_time;
                     iss >> command >> start_time;
 
-                    fs.wait_until(start_time.c_str());
+                    //fs.wait_until(start_time.c_str());
 
-                    std::ostringstream pyCmd;
-                    pyCmd << "\""
-                        << pathbuffer
-                        << "\\timestamps_acquisition_wigner.py\"";
-
-                    fs.run(pyCmd.str());
+                    path.clear();
+                    path << "\"" << pathbuffer << "\\timestamps_acquisition_wigner.py\"";
+                    fs.run(path.str());
                 }
 
                 if(fs.is_same_str(recvbuf, "read_data_file")){
-                    std::vector<std::string> files = collectFiles("./data", "bme");
+                    std::vector<std::string> files = collectFiles("./data", "wigner");
                     for (const auto& file : files) {
                         sendFile(ClientSocket, file);
                     }
