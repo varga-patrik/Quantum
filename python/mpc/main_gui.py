@@ -18,6 +18,8 @@ from gui_components import (
     DEFAULT_LOCAL_SERIALS, DEFAULT_REMOTE_SERIALS,
     format_number, PlotUpdater, OptimizerRowExtended
 )
+from gui_components.file_transfer_manager import FileTransferManager
+from gui_components.peer_command_handlers import PeerCommandHandlers
 from mock_time_controller import MockTimeController, is_mock_controller
 from peer_connection import PeerConnection
 from connection_dialog import show_connection_dialog
@@ -260,41 +262,6 @@ class App:
         else:
             logger.warning("No peer connection - streaming locally only")
     
-    def _handle_remote_streaming_start(self, data):
-        """Handle STREAMING_START command from peer."""
-        duration_sec = data.get('duration_sec')
-        logger.info(f"Received STREAMING_START from peer with duration: {duration_sec}")
-        
-        # Update duration field in UI to match remote side
-        if duration_sec:
-            self.duration_var.set(str(duration_sec))
-            logger.info(f"Updated duration UI field to {duration_sec} seconds")
-        else:
-            self.duration_var.set("0")
-            logger.info("Updated duration UI field to 0 (unlimited)")
-        
-        # Get save settings from checkboxes
-        local_save_channels = [i+1 for i in range(4) if self.local_save_vars[i].get()]
-        remote_save_channels = [i+1 for i in range(4) if self.remote_save_vars[i].get()] if self.remote_save_vars else []
-        
-        # Start local streaming with the same duration
-        if hasattr(self, 'plot_updater') and self.plot_updater:
-            self.plot_updater.start(local_save_channels=local_save_channels, 
-                                   remote_save_channels=remote_save_channels,
-                                   recording_duration_sec=duration_sec)
-        
-        # Start recording timer display
-        if duration_sec:
-            self.recording_start_time = time.time()
-            self.recording_duration = duration_sec
-            self._update_recording_timer()
-    
-    def _handle_remote_streaming_stop(self, data):
-        """Handle STREAMING_STOP command from peer."""
-        logger.info("Received STREAMING_STOP from peer")
-        # Stop locally but don't send back to peer (avoid infinite loop)
-        self._on_stop_streaming(send_to_peer=False)
-    
     def _on_stop_streaming(self, send_to_peer=True):
         """Stop streaming on both local and remote sites."""
         logger.info("Stopping synchronized streaming on both sites")
@@ -436,12 +403,37 @@ class App:
             app_ref=self  # Pass reference to access correlation pairs and remote data
         )
         
-        # Register command handler for remote streaming start
+        # Initialize peer command handlers (for counter sync, optimization control, etc.)
         if self.peer_connection:
-            self.peer_connection.register_command_handler('STREAMING_START', 
-                                                         self._handle_remote_streaming_start)
-            self.peer_connection.register_command_handler('STREAMING_STOP', 
-                                                         self._handle_remote_streaming_stop)
+            self.peer_command_handlers = PeerCommandHandlers(self)
+            self.peer_command_handlers.register_all(self.peer_connection)
+            logger.info("Peer command handlers registered")
+        else:
+            self.peer_command_handlers = None
+        
+        # Initialize file transfer manager
+        if self.peer_connection:
+            self.file_transfer_manager = FileTransferManager(
+                peer_connection=self.peer_connection,
+                plot_updater=self.plot_updater,
+                status_callback=self._update_transfer_status
+            )
+            
+            # Register file transfer command handlers (chunked transfer)
+            self.peer_connection.register_command_handler('FILE_TRANSFER_REQUEST', 
+                                                         self.file_transfer_manager.handle_transfer_request)
+            self.peer_connection.register_command_handler('FILE_TRANSFER_START', 
+                                                         self.file_transfer_manager.handle_transfer_start)
+            self.peer_connection.register_command_handler('FILE_TRANSFER_CHUNK', 
+                                                         self.file_transfer_manager.handle_transfer_chunk)
+            self.peer_connection.register_command_handler('FILE_TRANSFER_END', 
+                                                         self.file_transfer_manager.handle_transfer_end)
+            self.peer_connection.register_command_handler('FILE_TRANSFER_DATA', 
+                                                         self.file_transfer_manager.handle_transfer_data)
+            self.peer_connection.register_command_handler('FILE_TRANSFER_COMPLETE', 
+                                                         self.file_transfer_manager.handle_transfer_complete)
+        else:
+            self.file_transfer_manager = None
 
         # Build control panel
         self._build_plot_controls()

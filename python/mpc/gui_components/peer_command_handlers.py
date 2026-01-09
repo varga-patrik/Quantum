@@ -75,15 +75,26 @@ class PeerCommandHandlers:
         """Handle streaming start command from remote peer."""
         import time
         duration_sec = data.get('duration_sec')
-        # Note: local_save_channels from sender's perspective = this side should save those channels
-        # remote_save_channels from sender's perspective = not used on this side
-        local_save_channels = data.get('local_save_channels', [])
-        logger.info(f"Received STREAMING_START command from peer (duration={duration_sec}s, save_channels={local_save_channels})")
+        logger.info(f"Received STREAMING_START command from peer (duration={duration_sec}s)")
         
+        # Update duration field in UI to match remote side
+        if hasattr(self.app, 'duration_var'):
+            if duration_sec:
+                self.app.duration_var.set(str(duration_sec))
+                logger.info(f"Updated duration UI field to {duration_sec} seconds")
+            else:
+                self.app.duration_var.set("0")
+                logger.info("Updated duration UI field to 0 (unlimited)")
+        
+        # Get save settings from checkboxes
+        local_save_channels = [i+1 for i in range(4) if self.app.local_save_vars[i].get()]
+        remote_save_channels = [i+1 for i in range(4) if self.app.remote_save_vars[i].get()] if hasattr(self.app, 'remote_save_vars') and self.app.remote_save_vars else []
+        
+        # Start local streaming with the same duration
         if hasattr(self.app, 'plot_updater') and self.app.plot_updater:
-            # Start local streaming when peer requests it with same save settings
             self.app.plot_updater.start(
                 local_save_channels=local_save_channels,
+                remote_save_channels=remote_save_channels,
                 recording_duration_sec=duration_sec
             )
         
@@ -91,14 +102,30 @@ class PeerCommandHandlers:
         if duration_sec:
             self.app.recording_start_time = time.time()
             self.app.recording_duration = duration_sec
-            self.app._update_recording_timer()
+            if hasattr(self.app, '_update_recording_timer'):
+                self.app._update_recording_timer()
     
     def handle_streaming_stop(self, data: dict):
         """Handle streaming stop command from remote peer."""
         logger.info("Received STREAMING_STOP command from peer - stopping local streaming")
+        
+        # Clear recording timer
+        if hasattr(self.app, 'recording_start_time'):
+            self.app.recording_start_time = None
+            self.app.recording_duration = None
+        if hasattr(self.app, 'recording_timer_label'):
+            self.app.recording_timer_label.config(text="")
+        
+        # Stop local streaming (but keep counter display running)
         if hasattr(self.app, 'plot_updater') and self.app.plot_updater:
-            # Stop local streaming when peer requests it (but keep counter display running)
             self.app.plot_updater.stop_streaming()
+        
+        # Auto-transfer files if checkbox is checked (same as _on_stop_streaming)
+        if hasattr(self.app, 'auto_transfer_var') and self.app.auto_transfer_var and self.app.auto_transfer_var.get():
+            logger.info("Auto-transfer enabled - requesting remote files")
+            # Delay slightly to ensure peer has finished writing files
+            if hasattr(self.app, 'root'):
+                self.app.root.after(1000, self.app._request_remote_files)
     
     # Data exchange handlers
     

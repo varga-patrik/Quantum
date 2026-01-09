@@ -16,6 +16,7 @@ BUFFER_SIZE = 4096
 HEARTBEAT_INTERVAL = 5.0  # seconds
 CONNECTION_TIMEOUT = 10.0  # seconds
 HANDSHAKE_TIMEOUT = 30.0  # seconds - longer for real network conditions
+SEND_TIMEOUT = 3.0  # seconds - socket send timeout for individual operations
 
 
 class PeerConnection:
@@ -431,15 +432,29 @@ class PeerConnection:
                 break
     
     def send_command(self, command: str, data: Dict[str, Any]) -> bool:
-        """Send an encrypted command to the peer."""
+        """Send an encrypted command to the peer with timeout protection."""
         if not self.connected or self.peer_socket is None or not self.encryption_ready:
             return False
         
         try:
             message = {'command': command, **data}
             encrypted = self.secure_channel.encrypt_message(message)
-            self.peer_socket.sendall((encrypted + '\n').encode('utf-8'))
-            return True
+            payload = (encrypted + '\n').encode('utf-8')
+            
+            # Set socket to non-blocking temporarily with timeout
+            old_timeout = self.peer_socket.gettimeout()
+            self.peer_socket.settimeout(SEND_TIMEOUT)
+            
+            try:
+                self.peer_socket.sendall(payload)
+                return True
+            finally:
+                # Restore original timeout
+                self.peer_socket.settimeout(old_timeout)
+                
+        except socket.timeout:
+            logger.error("Send command timeout after %.1fs for command: %s", SEND_TIMEOUT, command)
+            return False
         except Exception as e:
             logger.error("Send command error: %s", e)
             self.connected = False
