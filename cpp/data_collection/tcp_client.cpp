@@ -395,7 +395,7 @@ int main(int argc, char **argv)
                 std::string command, startTimeStr;
                 iss >> command >> startTimeStr;
 
-                fs.wait_until(startTimeStr.c_str());
+                //fs.wait_until(startTimeStr.c_str());
 
                 path << "\"" << pathbuffer << "\\timestamps_acquisition_bme.py\"";
                 fs.run(path.str());

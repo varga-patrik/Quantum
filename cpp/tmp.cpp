@@ -35,5 +35,5 @@ int main(int argc, char* argv[]) {
     std::vector<std::string> files_bme = collectFiles("../data", "timestamps_bme");
     std::vector<std::string> files_wigner = collectFiles("../data", "timestamps_wigner");
 
-    correlator.runCorrelation(true, files_bme, files_wigner, 2048);
+    correlator.runCorrelation(false, files_bme, files_wigner, 2048);
 }
