@@ -46,6 +46,35 @@ std::vector<std::string> collectFiles(const std::string& folder, const std::stri
     return files;
 }
 
+void clearDataFolder(const std::string& folder) {
+    try {
+        for (const auto& entry : std::filesystem::directory_iterator(folder)) {
+            if (entry.is_regular_file()) {
+                std::filesystem::remove(entry.path());
+            }
+        }
+    }
+    catch (const std::filesystem::filesystem_error& e) {
+        std::cerr << "Filesystem error: " << e.what() << std::endl;
+    }
+}
+
+void deleteFiles(const std::string& folder, const std::string& condition) {
+    try {
+        for (const auto& entry : std::filesystem::directory_iterator(folder)) {
+            if (!entry.is_regular_file()) continue; 
+            std::string filename = entry.path().filename().string();
+
+            if (filename.find(condition) != std::string::npos) {
+                std::filesystem::remove(entry.path());
+            }
+        }
+    }
+    catch (const std::filesystem::filesystem_error& e) {
+        std::cerr << "Filesystem error: " << e.what() << std::endl;
+    }
+}
+
 void sendDoneMessage(SOCKET clientSocket) {
     std::string message = "done";
     size_t markerLen = message.size();
@@ -340,8 +369,8 @@ int main(void)
 
     if(TLI_BuildDeviceList() == 0){
 
-        KinesisUtil device_wigner_4("55290814");
-        KinesisUtil device_wigner_2("55290504");
+        KinesisUtil device_wigner_4("55290504");
+        KinesisUtil device_wigner_2("55290814");
 
         device_wigner_2.load();
         device_wigner_4.load();
@@ -372,6 +401,25 @@ int main(void)
                     device_wigner_4.home();
                 }
 
+                if(fs.is_same_str(recvbuf, "clear")){
+                    clearDataFolder("C:\\Users\\DR KIS\\Desktop\\vp\\Quantum\\data");
+                }
+
+                if(fs.is_in(recvbuf, "start")){
+                    std::istringstream iss(recvbuf);
+                    std::string command, start_time;
+                    iss >> command >> start_time;
+
+                    fs.wait_until(start_time.c_str());
+
+                    std::ostringstream pyCmd;
+                    pyCmd << "\""
+                        << pathbuffer
+                        << "\\timestamps_acquisition_wigner.py\"";
+
+                    fs.run(pyCmd.str());
+                }
+
                 if(fs.is_same_str(recvbuf, "read_data_file")){
                     std::vector<std::string> files = collectFiles("./data", "bme");
                     for (const auto& file : files) {
@@ -387,6 +435,8 @@ int main(void)
 
                     send(ClientSocket, eotHeader, 3, 0);
                     send(ClientSocket, eotMarker.c_str(), eotMarker.size(), 0);
+
+                    deleteFiles("C:\\Users\\DR KIS\\Desktop\\vp\\Quantum\\data", "wigner");
                 }
 
                 if (fs.is_same_str(recvbuf, "read_correlator_buffer")) {
@@ -458,11 +508,13 @@ int main(void)
                         if (mode == "full_phase") {
                             // perform full phase scan
                             runMeasurement = true;
+                            device_wigner_2.setVelParams(10.0, 6.0);
                             angle = 0.0;  // could represent starting point
                         } 
                         else if (mode == "fine_scan") {
                             // perform fine scan around optimal point
                             runMeasurement = true;
+                            device_wigner_2.setVelParams(10.0, 4.0);
                             angle = 0.0;
                         } 
                         else {
@@ -476,8 +528,8 @@ int main(void)
 
                         // Always rotate first
                         if(!runMeasurement){
-                            device_wigner_2.setRelParam(angle);
-                            device_wigner_2.moveRel();
+                            device_wigner_2.setAbsParam(angle);
+                            device_wigner_2.moveAbs();
                         }
 
                         if (runMeasurement && duration > 0.0 && hasStartTime) {
@@ -485,6 +537,10 @@ int main(void)
                             if(mode == "fine_scan"){
                                 device_wigner_2.setRelParam(-10.0);
                                 device_wigner_2.moveRel();
+                            }
+
+                            if(mode == "full_phase"){
+                                device_wigner_2.home();
                             }
 
                             // Wait until start time
@@ -511,14 +567,21 @@ int main(void)
 
                             // Clamp collected data
                             std::string end = fs.print_gpstime();
+                            std::this_thread::sleep_for(std::chrono::seconds(3));
                             clampData("C:\\Users\\DR KIS\\Desktop\\vp\\Quantum\\data", fs.calculate_time_diff(startTime.c_str(), end.c_str()));
                         } else if (!runMeasurement) {
                             printf("Rotation only (no measurement triggered).\n");
                         }
                     }
                     else if (deviceName == "wigner4") {
-                        device_wigner_4.setRelParam(0.0);  // placeholder
-                        device_wigner_4.moveRel();
+                        double angle = 0.0;
+                        try {
+                            angle = std::stod(mode);
+                        } catch (...) {
+                            printf("Invalid angle format: %s\n", mode.c_str());
+                        }
+                        device_wigner_4.setAbsParam(angle);  // placeholder
+                        device_wigner_4.moveAbs();
                     }
                 }
 

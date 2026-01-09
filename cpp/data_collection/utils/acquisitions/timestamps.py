@@ -110,7 +110,7 @@ def open_timestamps_acquisition(
         ext = "bin" if fmt == "bin" else "txt"
 
         timestr = time.strftime("%m-%d_%H-%M-%S")
-        filepath = output_dir / f"timestamps_bme_{timestr}_C{channel}.{ext}"
+        filepath = output_dir / f"timestamps_wigner_{timestr}_C{channel}.{ext}"
         filepath_escaped = str(filepath).replace("\\", "\\\\")
 
         command = f'start-save --address {tc_address} --channel {channel} --filename "{filepath_escaped}" --format {fmt}'
