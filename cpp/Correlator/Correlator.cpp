@@ -423,7 +423,9 @@ uint64_t Correlator::runCorrelation(bool reducStr, const std::vector<std::string
     }
 
     this->buff1 = fftw_alloc_complex(this->N);
-    this->buff2 = fftw_alloc_complex(this->N);
+    if(!dataset2Path.empty()){
+        this->buff2 = fftw_alloc_complex(this->N);
+    }
     if (!this->buff1 || !this->buff2) {
         fprintf(stderr, "FFTW alloc failed\n");
         if (this->buff1) fftw_free(this->buff1);

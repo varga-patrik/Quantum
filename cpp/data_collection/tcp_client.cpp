@@ -12,6 +12,7 @@
 #include <iostream>
 #include <filesystem>
 #include <sstream>
+#include <cstring>
 #include "fs_util.h"
 #include "KinesisUtil.h"
 #include "Correlator.h"
@@ -123,7 +124,7 @@ fftw_complex* readFftwBuffer(SOCKET socket, const std::vector<char>& firstChunk,
     // Add first chunk
     allData.insert(allData.end(), firstChunk.begin(), firstChunk.begin() + firstChunkSize);
     
-    std::cout << "First chunk: " << firstChunkSize << " bytes" << std::endl;
+    //std::cout << "First chunk: " << firstChunkSize << " bytes" << std::endl;
     
     char header[3];
     while (true) {
@@ -145,8 +146,7 @@ fftw_complex* readFftwBuffer(SOCKET socket, const std::vector<char>& firstChunk,
         
         // Append data
         allData.insert(allData.end(), buffer.begin(), buffer.end());
-        std::cout << "Received chunk: " << readCount << " bytes, total: " 
-                  << allData.size() << " bytes" << std::endl;
+        //std::cout << "Received chunk: " << readCount << " bytes, total: " << allData.size() << " bytes" << std::endl;
     }
     
     // Verify size
@@ -270,6 +270,7 @@ int main(int argc, char **argv)
         device_bme_4.startPolling(200);
 
         Correlator correlator(100000, (1ULL << 20));
+        correlator.Tshift = 0;
         Orchestrator orchstrator(fs, device_bme_2, 0.0, device_bme_4, 0.0, correlator, 
                                 "C:\\Users\\MCL\\Documents\\VargaPatrik\\Quantum\\data", 5.0);
 
@@ -297,9 +298,7 @@ int main(int argc, char **argv)
             }
 
             if(fs.is_same_str(sendbuf.c_str(), "run_correlator")){
-                correlator.runCorrelation(false, 
-                    collectFiles("C:\\Users\\MCL\\Documents\\VargaPatrik\\Quantum\\data", "bme"), 
-                    std::vector<std::string>(), 2048);
+                correlator.runCorrelation(false, collectFiles("C:\\Users\\MCL\\Documents\\VargaPatrik\\Quantum\\data", "bme"), std::vector<std::string>(), 2048);
             }
 
             if(fs.is_same_str(sendbuf.c_str(), "start")){
@@ -318,15 +317,6 @@ int main(int argc, char **argv)
 
             if (fs.is_same_str(sendbuf.c_str(), "read_correlator_buffer")) {
                 std::cout << "Requesting correlator buffer from server..." << std::endl;
-                
-                // Send command
-                iResult = send(ConnectSocket, sendbuf.c_str(), DEFAULT_BUFLEN, 0);
-                if (iResult == SOCKET_ERROR) {
-                    printf("send failed with error: %d\n", WSAGetLastError());
-                    closesocket(ConnectSocket);
-                    WSACleanup();
-                    return 1;
-                }
                 
                 std::this_thread::sleep_for(std::chrono::seconds(2));
                 
@@ -356,13 +346,12 @@ int main(int argc, char **argv)
                     fftw_complex* receivedBuffer = readFftwBuffer(ConnectSocket, buffer, messageSize, correlator.N);
                     
                     if (receivedBuffer) {
-                        // Copy to correlator's buff2
                         if (!correlator.buff2) {
                             correlator.buff2 = fftw_alloc_complex(correlator.N);
                         }
                         
                         std::memcpy(correlator.buff2, receivedBuffer, correlator.N * sizeof(fftw_complex));
-                        correlator.buff2_size = correlator.N;  // Or whatever size is appropriate
+                        correlator.buff2_size = correlator.N;  
                         
                         fftw_free(receivedBuffer);
                         
@@ -371,11 +360,8 @@ int main(int argc, char **argv)
                         std::cerr << "Failed to receive FFTW buffer" << std::endl;
                     }
                     
-                    break;  // Only expecting one buffer
+                    break;  
                 }
-                
-                // Wait for done
-                WaitForCommandDone(ConnectSocket);
             }
 
             else if(sendbuf.find("read_data_file") != std::string::npos){

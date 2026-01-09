@@ -194,12 +194,11 @@ void sendFile(SOCKET clientSocket, const std::string& filePath) {
 void sendFftwBuffer(SOCKET socket, Correlator& correlator) {
     // Calculate the actual byte size of the complex buffer
     // fftw_complex is typedef double[2], so each element is 2 doubles
-    size_t num_elements = correlator.N;  // Use N, not buff2_size
-    size_t element_size = sizeof(fftw_complex);  // sizeof(double[2]) = 16 bytes
+    size_t num_elements = correlator.N;  
+    size_t element_size = sizeof(fftw_complex);  
     size_t totalBytes = num_elements * element_size;
     
-    std::cout << "Sending FFTW buffer: " << num_elements << " complex elements = " 
-              << totalBytes << " bytes" << std::endl;
+    //std::cout << "Sending FFTW buffer: " << num_elements << " complex elements = " << totalBytes << " bytes" << std::endl;
     
     // Cast the FFTW buffer to bytes
     char* bufferPtr = reinterpret_cast<char*>(correlator.buff2);
@@ -228,7 +227,7 @@ void sendFftwBuffer(SOCKET socket, Correlator& correlator) {
         }
         
         bytesSent += bytesToSend;
-        std::cout << "Sent " << bytesSent << " / " << totalBytes << " bytes" << std::endl;
+        //std::cout << "Sent " << bytesSent << " / " << totalBytes << " bytes" << std::endl;
     }
     
     // Send EOF marker
@@ -241,7 +240,7 @@ void sendFftwBuffer(SOCKET socket, Correlator& correlator) {
     send(socket, eofHeader, 3, 0);
     send(socket, eofMarker.c_str(), eofMarker.size(), 0);
     
-    std::cout << "FFTW buffer sent successfully" << std::endl;
+    //std::cout << "FFTW buffer sent successfully" << std::endl;
 }
 
 int main(void) 
@@ -351,6 +350,7 @@ int main(void)
         device_wigner_4.startPolling(200);
 
         Correlator correlator(100000, (1ULL << 20));
+        correlator.Tshift = 0;
 
         do {
             std::ostringstream path;
@@ -396,8 +396,7 @@ int main(void)
                     correlator.buff2 = fftw_alloc_complex(correlator.N);
                     if (!correlator.buff2) {
                         std::cerr << "Failed to allocate FFTW buffer" << std::endl;
-                        sendDoneMessage();
-                        return;
+                        sendDoneMessage(ClientSocket);
                     }
                     
                     // Copy and read data
@@ -417,7 +416,7 @@ int main(void)
                         0                       // Tshift
                     );
                     
-                    std::cout << "Read " << correlator.buff2_size << " timestamps into buffer" << std::endl;
+                    //std::cout << "Read " << correlator.buff2_size << " bytes into buffer" << std::endl;
                     
                     // Send the buffer
                     sendFftwBuffer(ClientSocket, correlator);
