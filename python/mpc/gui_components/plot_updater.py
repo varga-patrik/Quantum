@@ -610,10 +610,17 @@ class PlotUpdater:
                         linestyle='-', linewidth=2, label=label)
         
         self.ax.legend(loc='upper left', fontsize=10)
-        self.ax.set_ylim([-10, 10])  # Fixed range for better visibility of small changes
+        
+        # Auto-scale y-axis based on data (with some padding)
+        if self.normalize_plot:
+            self.ax.set_ylim([-0.05, 1.05])
+        else:
+            max_count = max(1, np.max(data))
+            self.ax.set_ylim([-max_count*0.05, max_count*1.1])
+        
         self.ax.set_title('Cross-Site Coincidence Counts (Quantum Correlations)', fontsize=12, fontweight='bold')
         self.ax.set_xlabel('Time Point')
-        self.ax.set_ylabel('Coincidences')
+        self.ax.set_ylabel('Coincidences' if not self.normalize_plot else 'Normalized')
         self.ax.set_xticks(range(0, 20))
         self.ax.grid(True, alpha=0.3)
 
@@ -636,20 +643,14 @@ class PlotUpdater:
         # Draw coincidence plot (or placeholder if not streaming yet)
         if not self.plot_histogram:
             if self.streaming_active:
-                # Show recording status instead of live plot (streaming disabled)
-                self.ax.text(0.5, 0.5, 
-                            '📹 Recording in Progress\n\n'
-                            'Timestamps are being saved to files\n'
-                            'Live streaming disabled\n\n'
-                            'Use offline analysis after recording completes',
-                            ha='center', va='center', transform=self.ax.transAxes,
-                            fontsize=12, bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.5))
+                # Draw live coincidence plot
+                self._draw_coincidence_plot()
             else:
                 # Show message when not streaming
                 self.ax.text(0.5, 0.5, 
                             'Timestamp Streaming Not Started\n\n'
                             'Click "Start" to begin recording\n'
-                            '(Live streaming disabled - files only)',
+                            'and see live coincidence measurements',
                             ha='center', va='center', transform=self.ax.transAxes,
                             fontsize=12, bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.5))
         else:

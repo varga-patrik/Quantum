@@ -20,6 +20,7 @@ from gui_components import (
 )
 from gui_components.file_transfer_manager import FileTransferManager
 from gui_components.peer_command_handlers import PeerCommandHandlers
+from gui_components.time_offset_tab import TimeOffsetTab
 from mock_time_controller import MockTimeController, is_mock_controller
 from peer_connection import PeerConnection
 from connection_dialog import show_connection_dialog
@@ -79,6 +80,7 @@ class App:
         self._build_plot_tab()
         self._build_polarizer_tab()
         self._build_gps_sync_tab()
+        self._build_time_offset_tab()
 
         # Auto-start counter display (for singles rates monitoring)
         # This starts the background loop that reads detector counters
@@ -295,8 +297,7 @@ class App:
         self.root.rowconfigure(0, weight=0)  # Connection status row
         self.root.rowconfigure(1, weight=0)  # Mock status bar row
         self.root.rowconfigure(2, weight=1)  # Main content row
-        self.root.columnconfigure(0, weight=1)
-        self.root.columnconfigure(1, weight=1)
+        self.root.columnconfigure(0, weight=1)  # Only notebook column
 
     def _build_connection_status(self):
         """Build connection status indicator."""
@@ -362,20 +363,34 @@ class App:
             status_label.pack(fill=tk.BOTH, expand=True)
 
     def _build_notebook(self):
-        """Create tabbed notebook on the left."""
+        """Create tabbed notebook."""
         self.notebook = ttk.Notebook(self.root)
         self.tab_plot = ttk.Frame(self.notebook)
         self.tab_polarizer = ttk.Frame(self.notebook)
         self.tab_gps_sync = ttk.Frame(self.notebook)
+        self.tab_time_offset = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_plot, text="Plotolás")
         self.notebook.add(self.tab_polarizer, text="Polarizáció kontroller")
         self.notebook.add(self.tab_gps_sync, text="GPS Szinkronizáció")
+        self.notebook.add(self.tab_time_offset, text="Időeltolás Kalkulátor")
         self.notebook.grid(row=2, column=0, sticky="news")
 
     def _build_plot_frame(self):
-        """Create plot frame on the right."""
-        self.plot_frame = tk.Frame(self.root, background=self.primary_color)
-        self.plot_frame.grid(row=2, column=1, sticky="news")
+        """Create plot frame inside the first tab only."""
+        # Create a container for the plot tab with left (controls) and right (plot) sections
+        plot_container = tk.Frame(self.tab_plot, background='white')
+        plot_container.pack(fill=tk.BOTH, expand=True)
+        
+        # Left section for controls
+        left_frame = tk.Frame(plot_container, background='white')
+        left_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=False)
+        
+        # Right section for plot
+        self.plot_frame = tk.Frame(plot_container, background='white')
+        self.plot_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        
+        # Store left_frame as tab_plot_left for building controls
+        self.tab_plot_left = left_frame
 
 
     def _build_plot_tab(self):
@@ -392,7 +407,7 @@ class App:
 
         canvas = FigureCanvasTkAgg(fig, master=self.plot_frame)
         canvas.get_tk_widget().pack(side=tk.TOP, fill=tk.BOTH, expand=1)
-        canvas.get_tk_widget().config(background=self.primary_color)
+        canvas.get_tk_widget().config(background='white')
 
         # Create plot updater
         self.plot_updater = PlotUpdater(
@@ -437,21 +452,18 @@ class App:
 
         # Build control panel
         self._build_plot_controls()
-        
-        # Build correlation pair selector (if peer connected)
-        if self.peer_connection:
-            self._build_correlation_pair_selector()
-            self._build_time_offset_config()
+        self._build_correlation_pair_selector()
+        self._build_time_offset_config()
         
         # Build live counters panel
         self._build_live_counters()
 
     def _build_plot_controls(self):
         """Build plot control buttons and checkboxes."""
-        controls = tk.Frame(self.tab_plot, relief=tk.GROOVE, bd=2, width=600)
+        controls = tk.Frame(self.tab_plot_left, relief=tk.GROOVE, bd=2, width=500)
         controls.grid(row=0, column=0, sticky="nws", pady=5)
 
-        tk.Label(controls, text="Plot:", width=20, height=2).grid(row=0, column=0, sticky="news")
+        tk.Label(controls, text="Plot:", width=15, height=2).grid(row=0, column=0, sticky="news")
         
         btn_start = tk.Button(
             controls, text="Start", background=self.action_color, width=15,
@@ -494,7 +506,7 @@ class App:
 
     def _build_correlation_pair_selector(self):
         """Build UI for selecting cross-site correlation pairs."""
-        selector_frame = tk.Frame(self.tab_plot, relief=tk.GROOVE, bd=2, width=600)
+        selector_frame = tk.Frame(self.tab_plot_left, relief=tk.GROOVE, bd=2, width=500)
         selector_frame.grid(row=2, column=0, sticky="nws", pady=5)
         
         tk.Label(selector_frame, text="Cross-Site Correlation Pairs:", 
@@ -566,7 +578,7 @@ class App:
     def _build_time_offset_config(self):
         """Build time offset configuration section."""
         # Time offset frame (matches C++ Correlator measured offset)
-        offset_frame = tk.LabelFrame(self.tab_plot, text="Time Offset Configuration (LOCAL - C++ Correlator)", 
+        offset_frame = tk.LabelFrame(self.tab_plot_left, text="Time Offset Configuration (LOCAL - C++ Correlator)", 
                                      font=('Arial', 10, 'bold'),
                                      relief=tk.GROOVE, bd=2, padx=10, pady=8)
         offset_frame.grid(row=3, column=0, sticky="ew", padx=5, pady=5)
@@ -661,13 +673,13 @@ class App:
     def _build_live_counters(self):
         """Build live detector counter display for local and remote."""
         # LOCAL COUNTERS
-        local_counters = tk.Frame(self.tab_plot, relief=tk.GROOVE, bd=2, width=300, background='#E8F5E9')
+        local_counters = tk.Frame(self.tab_plot_left, relief=tk.GROOVE, bd=2, width=250, background='#E8F5E9')
         local_counters.grid(row=1, column=0, sticky="nws", pady=5, padx=(5, 2))
         
         role_label = "BME" if self.computer_role == "computer_b" else "Wigner"
-        tk.Label(local_counters, text=f"🟢 LOCAL Detektorok beütésszámai ({role_label})", 
+        tk.Label(local_counters, text=f"🟢 LOCAL Detektorok ({role_label})", 
                 font=('Arial', 10, 'bold'), foreground='#2E7D32',
-                background='#E8F5E9', width=25, height=2).grid(
+                background='#E8F5E9', width=22, height=2).grid(
             row=0, column=0, columnspan=4, sticky="news"
         )
 
@@ -689,13 +701,13 @@ class App:
 
         # REMOTE COUNTERS (if peer connected)
         if self.peer_connection:
-            remote_counters = tk.Frame(self.tab_plot, relief=tk.GROOVE, bd=2, width=300, background='#E3F2FD')
+            remote_counters = tk.Frame(self.tab_plot_left, relief=tk.GROOVE, bd=2, width=250, background='#E3F2FD')
             remote_counters.grid(row=1, column=1, sticky="nws", pady=5, padx=(2, 5))
             
             remote_role = "Wigner" if self.computer_role == "computer_b" else "BME"
-            tk.Label(remote_counters, text=f"🔵 REMOTE Detektorok beütésszámai ({remote_role})", 
+            tk.Label(remote_counters, text=f"🔵 REMOTE Detektorok ({remote_role})", 
                     font=('Arial', 10, 'bold'), foreground='#1565C0',
-                    background='#E3F2FD', width=25, height=2).grid(
+                    background='#E3F2FD', width=22, height=2).grid(
                 row=0, column=0, columnspan=4, sticky="news"
             )
 
@@ -1170,7 +1182,16 @@ class App:
         except Exception as e:
             logger.error(f"GPS drift measurement error: {e}")
             self.gps_drift_label.config(text=f"Error: {e}")
-
+    
+    def _build_time_offset_tab(self):
+        """Build the time offset calculator tab."""
+        self.time_offset_tab_component = TimeOffsetTab(
+            self.tab_time_offset,
+            app_ref=self,
+            bg_color=self.bg_color,
+            fg_color=self.fg_color,
+            action_color=self.action_color
+        )
 
     def _on_close(self):
         """Handle window close event with proper cleanup."""
