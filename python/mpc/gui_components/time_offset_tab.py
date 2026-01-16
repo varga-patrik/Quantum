@@ -44,9 +44,16 @@ class TimeOffsetTab:
         # Calculator instance
         self.calculator = TimeOffsetCalculator()
         
-        # Selected file paths
-        self.local_file_path = None
-        self.remote_file_path = None
+        # Channel pair selections (4 channels)
+        self.channel_pairs = []
+        for i in range(4):
+            self.channel_pairs.append({
+                'enabled': tk.BooleanVar(value=(i == 0)),  # Ch1 enabled by default
+                'local_file': None,
+                'remote_file': None,
+                'local_label': None,  # Will be set in UI
+                'remote_label': None
+            })
         
         # Calculation results
         self.last_result = None
@@ -91,46 +98,93 @@ class TimeOffsetTab:
         self._build_plot(container)
     
     def _build_file_selection(self, parent):
-        """Build file selection section."""
-        file_frame = tk.LabelFrame(parent, text="📁 Timestamp Files", 
+        """Build file selection section for multiple channel pairs."""
+        file_frame = tk.LabelFrame(parent, text="📁 Channel Pair Selection", 
                                    font=('Arial', 10, 'bold'),
                                    background='#E8F5E9', bd=2, relief=tk.RIDGE,
-                                   padx=10, pady=5)
+                                   padx=10, pady=8)
         file_frame.pack(fill=tk.X, pady=(0, 5))
         
-        # Local file
-        local_row = tk.Frame(file_frame, background='#E8F5E9')
-        local_row.pack(fill=tk.X, pady=2)
+        # Header row
+        header = tk.Frame(file_frame, background='#E8F5E9')
+        header.pack(fill=tk.X, pady=(0, 5))
         
-        tk.Label(local_row, text="LOCAL:", font=('Arial', 9, 'bold'),
-                background='#E8F5E9', width=10, anchor='w').pack(side=tk.LEFT, padx=(0, 5))
+        tk.Label(header, text="", width=3, background='#E8F5E9').pack(side=tk.LEFT)
+        tk.Label(header, text="Channel", font=('Arial', 8, 'bold'), width=8,
+                background='#E8F5E9').pack(side=tk.LEFT)
+        tk.Label(header, text="LOCAL File", font=('Arial', 8, 'bold'), width=35,
+                background='#E8F5E9', anchor='w').pack(side=tk.LEFT, padx=5)
+        tk.Label(header, text="REMOTE File", font=('Arial', 8, 'bold'), width=35,
+                background='#E8F5E9', anchor='w').pack(side=tk.LEFT, padx=5)
         
-        self.local_file_label = tk.Label(local_row, text="No file selected",
-                                         font=('Courier New', 8),
-                                         background='white', foreground='#666',
-                                         relief=tk.SUNKEN, anchor='w', padx=3)
-        self.local_file_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        # Create 4 channel pair rows
+        for ch_idx in range(4):
+            self._build_channel_row(file_frame, ch_idx)
         
-        tk.Button(local_row, text="Browse", command=self._browse_local_file,
-                 background='#4CAF50', foreground='white', width=10,
-                 font=('Arial', 8, 'bold')).pack(side=tk.LEFT)
+        # Control buttons
+        btn_row = tk.Frame(file_frame, background='#E8F5E9')
+        btn_row.pack(fill=tk.X, pady=(8, 0))
         
-        # Remote file
-        remote_row = tk.Frame(file_frame, background='#E8F5E9')
-        remote_row.pack(fill=tk.X, pady=2)
+        tk.Button(btn_row, text="🔍 Auto-Detect Files",
+                 command=self._auto_detect_files,
+                 background='#2196F3', foreground='white',
+                 font=('Arial', 8, 'bold'), width=16).pack(side=tk.LEFT, padx=2)
         
-        tk.Label(remote_row, text="REMOTE:", font=('Arial', 9, 'bold'),
-                background='#E8F5E9', width=10, anchor='w').pack(side=tk.LEFT, padx=(0, 5))
+        tk.Button(btn_row, text="🗑️ Clear All",
+                 command=self._clear_all_files,
+                 background='#FF5722', foreground='white',
+                 font=('Arial', 8, 'bold'), width=12).pack(side=tk.LEFT, padx=2)
         
-        self.remote_file_label = tk.Label(remote_row, text="No file selected",
-                                          font=('Courier New', 8),
-                                          background='white', foreground='#666',
-                                          relief=tk.SUNKEN, anchor='w', padx=3)
-        self.remote_file_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 5))
+        # Status label
+        self.file_status_label = tk.Label(file_frame, text="Select at least one channel pair",
+                                          font=('Arial', 8), foreground='#666',
+                                          background='#E8F5E9')
+        self.file_status_label.pack(pady=(5, 0))
+    
+    def _build_channel_row(self, parent, ch_idx):
+        """Build a single channel pair row."""
+        ch_num = ch_idx + 1
+        pair = self.channel_pairs[ch_idx]
         
-        tk.Button(remote_row, text="Browse", command=self._browse_remote_file,
-                 background='#2196F3', foreground='white', width=10,
-                 font=('Arial', 8, 'bold')).pack(side=tk.LEFT)
+        row = tk.Frame(parent, background='#E8F5E9')
+        row.pack(fill=tk.X, pady=2)
+        
+        # Checkbox
+        cb = tk.Checkbutton(row, variable=pair['enabled'], background='#E8F5E9',
+                           command=self._update_file_status)
+        cb.pack(side=tk.LEFT, padx=(0, 5))
+        
+        # Channel label
+        tk.Label(row, text=f"Ch {ch_num}", font=('Arial', 9, 'bold'),
+                background='#E8F5E9', width=6, anchor='w').pack(side=tk.LEFT)
+        
+        # Local file display
+        local_label = tk.Label(row, text="(not selected)",
+                              font=('Courier New', 7), width=40,
+                              background='white', foreground='#999',
+                              relief=tk.SUNKEN, anchor='w', padx=3)
+        local_label.pack(side=tk.LEFT, padx=2)
+        pair['local_label'] = local_label
+        
+        # Local browse button
+        tk.Button(row, text="📂", width=2,
+                 command=lambda: self._browse_channel_file(ch_idx, 'local'),
+                 background='#4CAF50', foreground='white',
+                 font=('Arial', 8, 'bold')).pack(side=tk.LEFT, padx=1)
+        
+        # Remote file display
+        remote_label = tk.Label(row, text="(not selected)",
+                               font=('Courier New', 7), width=40,
+                               background='white', foreground='#999',
+                               relief=tk.SUNKEN, anchor='w', padx=3)
+        remote_label.pack(side=tk.LEFT, padx=2)
+        pair['remote_label'] = remote_label
+        
+        # Remote browse button
+        tk.Button(row, text="📂", width=2,
+                 command=lambda: self._browse_channel_file(ch_idx, 'remote'),
+                 background='#2196F3', foreground='white',
+                 font=('Arial', 8, 'bold')).pack(side=tk.LEFT, padx=1)
     
     def _build_parameters(self, parent):
         """Build correlation parameters section."""
@@ -280,75 +334,144 @@ class TimeOffsetTab:
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         self.canvas.draw()
     
+    def _update_file_status(self):
+        """Update file selection status label."""
+        enabled_count = sum(1 for pair in self.channel_pairs if pair['enabled'].get())
+        pairs_with_files = sum(1 for pair in self.channel_pairs 
+                               if pair['enabled'].get() and pair['local_file'] and pair['remote_file'])
+        
+        if pairs_with_files == 0:
+            self.file_status_label.config(text="⚠️ Select at least one channel pair with both files",
+                                         foreground='#FF5722')
+        elif pairs_with_files < enabled_count:
+            self.file_status_label.config(text=f"⚠️ {pairs_with_files}/{enabled_count} enabled channels have both files",
+                                         foreground='#FF9800')
+        else:
+            self.file_status_label.config(text=f"✓ {pairs_with_files} channel pair(s) ready",
+                                         foreground='#4CAF50')
+    
     def _auto_detect_files(self):
-        """Auto-detect most recent timestamp files."""
+        """Auto-detect most recent timestamp files for all channels."""
         try:
-            # Look for recent local files
-            local_dir = Path.home() / "Documents" / "AgodSolt" / "data"
-            if local_dir.exists():
-                local_files = sorted(local_dir.glob("timestamps_live_ch1_*.bin"), 
-                                   key=lambda p: p.stat().st_mtime, reverse=True)
-                if local_files:
-                    self._set_local_file(local_files[0])
+            data_dir = Path.home() / "Documents" / "AgodSolt" / "data"
+            if not data_dir.exists():
+                logger.warning(f"Data directory not found: {data_dir}")
+                return
             
-            # Look for recent remote files
-            remote_dir = local_dir / "remote"
-            if remote_dir.exists():
-                remote_files = sorted(remote_dir.glob("timestamps_live_ch1_*.bin"),
-                                    key=lambda p: p.stat().st_mtime, reverse=True)
-                if remote_files:
-                    self._set_remote_file(remote_files[0])
+            # Try to find files for each channel
+            for ch_idx in range(4):
+                ch_num = ch_idx + 1
+                
+                # Look for local files (ch1_*, ch2_*, etc.)
+                local_pattern = f"*ch{ch_num}*.bin"
+                local_files = sorted(data_dir.glob(local_pattern),
+                                   key=lambda p: p.stat().st_mtime, reverse=True)
+                
+                # Exclude 'remote' or 'wigner' in filename for local
+                local_files = [f for f in local_files if 'remote' not in f.name.lower() 
+                              and 'wigner' not in f.name.lower()]
+                
+                if local_files:
+                    self._set_channel_file(ch_idx, 'local', local_files[0])
+                    logger.info(f"Auto-detected Ch{ch_num} local: {local_files[0].name}")
+                
+                # Look for remote files
+                remote_dir = data_dir / "remote"
+                if remote_dir.exists():
+                    remote_files = sorted(remote_dir.glob(local_pattern),
+                                        key=lambda p: p.stat().st_mtime, reverse=True)
+                    if remote_files:
+                        self._set_channel_file(ch_idx, 'remote', remote_files[0])
+                        logger.info(f"Auto-detected Ch{ch_num} remote: {remote_files[0].name}")
+                else:
+                    # Try files with 'wigner' or 'remote' in name
+                    remote_files = sorted(data_dir.glob(local_pattern),
+                                        key=lambda p: p.stat().st_mtime, reverse=True)
+                    remote_files = [f for f in remote_files if 'wigner' in f.name.lower() 
+                                  or 'remote' in f.name.lower()]
+                    if remote_files:
+                        self._set_channel_file(ch_idx, 'remote', remote_files[0])
+                        logger.info(f"Auto-detected Ch{ch_num} remote: {remote_files[0].name}")
+            
+            self._update_file_status()
+            
         except Exception as e:
-            logger.debug(f"Auto-detect files failed: {e}")
+            logger.error(f"Auto-detect files failed: {e}", exc_info=True)
     
-    def _browse_local_file(self):
-        """Open file browser for local timestamp file."""
+    def _browse_channel_file(self, ch_idx, side):
+        """Open file browser for specific channel and side (local/remote)."""
+        ch_num = ch_idx + 1
         initial_dir = Path.home() / "Documents" / "AgodSolt" / "data"
+        
+        if side == 'remote':
+            remote_dir = initial_dir / "remote"
+            if remote_dir.exists():
+                initial_dir = remote_dir
+        
+        title = f"Select Ch{ch_num} {side.upper()} Timestamp File"
         filepath = filedialog.askopenfilename(
-            title="Select Local Timestamp File",
+            title=title,
             initialdir=str(initial_dir) if initial_dir.exists() else None,
             filetypes=[("Binary files", "*.bin"), ("All files", "*.*")]
         )
         if filepath:
-            self._set_local_file(Path(filepath))
+            self._set_channel_file(ch_idx, side, Path(filepath))
     
-    def _browse_remote_file(self):
-        """Open file browser for remote timestamp file."""
-        initial_dir = Path.home() / "Documents" / "AgodSolt" / "data" / "remote"
-        filepath = filedialog.askopenfilename(
-            title="Select Remote Timestamp File",
-            initialdir=str(initial_dir) if initial_dir.exists() else None,
-            filetypes=[("Binary files", "*.bin"), ("All files", "*.*")]
-        )
-        if filepath:
-            self._set_remote_file(Path(filepath))
+    def _set_channel_file(self, ch_idx, side, filepath: Path):
+        """Set file for a specific channel and side."""
+        pair = self.channel_pairs[ch_idx]
+        
+        if side == 'local':
+            pair['local_file'] = filepath
+            pair['local_label'].config(text=filepath.name, foreground='#2E7D32')
+        else:
+            pair['remote_file'] = filepath
+            pair['remote_label'].config(text=filepath.name, foreground='#1565C0')
+        
+        self._update_file_status()
+        logger.info(f"Ch{ch_idx+1} {side} file set: {filepath.name}")
     
-    def _set_local_file(self, filepath: Path):
-        """Set local file and update UI."""
-        self.local_file_path = filepath
-        self.local_file_label.config(text=filepath.name, foreground='#2E7D32')
-        logger.info(f"Local file selected: {filepath.name}")
-    
-    def _set_remote_file(self, filepath: Path):
-        """Set remote file and update UI."""
-        self.remote_file_path = filepath
-        self.remote_file_label.config(text=filepath.name, foreground='#1565C0')
-        logger.info(f"Remote file selected: {filepath.name}")
+    def _clear_all_files(self):
+        """Clear all file selections."""
+        for pair in self.channel_pairs:
+            pair['local_file'] = None
+            pair['remote_file'] = None
+            pair['local_label'].config(text="(not selected)", foreground='#999')
+            pair['remote_label'].config(text="(not selected)", foreground='#999')
+        
+        self._update_file_status()
+        logger.info("All files cleared")
     
     def _start_calculation(self):
         """Start correlation calculation in background thread."""
-        # Validate file selection
-        if not self.local_file_path or not self.remote_file_path:
-            messagebox.showwarning("Files Required",
-                                  "Please select both local and remote timestamp files.")
-            return
+        # Collect enabled channel pairs with both files selected
+        local_files = []
+        remote_files = []
         
-        if not self.local_file_path.exists():
-            messagebox.showerror("File Not Found", f"Local file not found:\n{self.local_file_path}")
-            return
+        for ch_idx, pair in enumerate(self.channel_pairs):
+            if pair['enabled'].get():
+                if not pair['local_file'] or not pair['remote_file']:
+                    messagebox.showwarning("Incomplete Selection",
+                                         f"Channel {ch_idx+1} is enabled but missing files.\n"
+                                         f"Please select both local and remote files, or disable the channel.")
+                    return
+                
+                if not pair['local_file'].exists():
+                    messagebox.showerror("File Not Found",
+                                       f"Ch{ch_idx+1} local file not found:\n{pair['local_file']}")
+                    return
+                
+                if not pair['remote_file'].exists():
+                    messagebox.showerror("File Not Found",
+                                       f"Ch{ch_idx+1} remote file not found:\n{pair['remote_file']}")
+                    return
+                
+                local_files.append(pair['local_file'])
+                remote_files.append(pair['remote_file'])
         
-        if not self.remote_file_path.exists():
-            messagebox.showerror("File Not Found", f"Remote file not found:\n{self.remote_file_path}")
+        if not local_files or not remote_files:
+            messagebox.showwarning("No Channels Selected",
+                                  "Please enable and select files for at least one channel pair.")
             return
         
         # Parse parameters
@@ -370,12 +493,14 @@ class TimeOffsetTab:
         self.plot_button.config(state=tk.DISABLED)
         self.save_button.config(state=tk.DISABLED)
         self.copy_button.config(state=tk.DISABLED)
-        self.status_label.config(text="Calculating... This may take 5-10 seconds",
+        
+        num_channels = len(local_files)
+        self.status_label.config(text=f"Calculating with {num_channels} channel pair(s)... Please wait",
                                 foreground='#FF9800')
         
         # Run in background thread
         def calculation_thread():
-            result = self.calculator.run_correlation(self.local_file_path, self.remote_file_path)
+            result = self.calculator.run_correlation(local_files, remote_files)
             self.root.after(0, lambda: self._on_calculation_complete(result))
         
         thread = threading.Thread(target=calculation_thread, daemon=True)

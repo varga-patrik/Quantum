@@ -9,7 +9,7 @@ import numpy as np
 import struct
 import logging
 from pathlib import Path
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, List
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +85,17 @@ class TimeOffsetCalculator:
         
         timestamps = np.array(timestamps, dtype=np.uint64)
         
+        # DEBUG: Check for timestamp issues
+        if len(timestamps) > 10:
+            logger.debug(f"First 10 timestamps: {timestamps[:10]}")
+            logger.debug(f"Last 10 timestamps: {timestamps[-10:]}")
+            
+            # Check if timestamps are monotonically increasing
+            if not np.all(np.diff(timestamps) >= 0):
+                non_monotonic = np.sum(np.diff(timestamps) < 0)
+                logger.warning(f"⚠️  {non_monotonic} timestamp decreases detected! "
+                             f"Data may have counter resets or wrong format.")
+        
         # Calculate file info
         time_span_sec = 0
         if len(timestamps) > 1:
@@ -136,9 +147,20 @@ class TimeOffsetCalculator:
         filled_bins = np.count_nonzero(buffer.real)
         max_count = np.max(buffer.real)
         mean_count = np.mean(buffer.real[buffer.real > 0]) if filled_bins > 0 else 0
+        total_counts = np.sum(buffer.real)
+        fill_ratio = filled_bins / self.N * 100
         
-        logger.info(f"Histogram: {filled_bins}/{self.N} bins filled, "
-                   f"max_count={max_count:.0f}, mean_count={mean_count:.2f}")
+        logger.info(f"Histogram: {filled_bins}/{self.N} bins filled ({fill_ratio:.2f}%), "
+                   f"max_count={max_count:.0f}, mean_count={mean_count:.2f}, total={total_counts:.0f}")
+        
+        # Check for wrap-around issues
+        edge_bins = int(0.05 * self.N)  # 5% from edges
+        counts_near_start = np.sum(buffer.real[:edge_bins])
+        counts_near_end = np.sum(buffer.real[-edge_bins:])
+        
+        if counts_near_start > 0 and counts_near_end > 0:
+            logger.warning(f"⚠️  Data near BOTH edges (start={counts_near_start:.0f}, end={counts_near_end:.0f}) - "
+                         f"possible wrap-around! Consider adjusting Tshift or increasing N.")
         
         return buffer
     
@@ -235,6 +257,10 @@ class TimeOffsetCalculator:
         edge_threshold = int(0.05 * self.N)  # 5% from edges
         near_edge = peak_index < edge_threshold or peak_index > (self.N - edge_threshold)
         
+        if near_edge:
+            logger.warning(f"⚠️  Peak at index {peak_index} is near edge (within 5% of boundaries). "
+                         f"This suggests wrap-around issues. Try adjusting Tshift!")
+        
         return {
             'confidence': confidence,
             'reliable': reliable,
@@ -245,13 +271,65 @@ class TimeOffsetCalculator:
             'second_peak_index': second_peak_index
         }
     
-    def run_correlation(self, local_file: Path, remote_file: Path) -> Dict[str, Any]:
+    def merge_timestamp_files(self, file_list: List[Path]) -> Tuple[np.ndarray, Dict[str, Any]]:
         """
-        Main entry point - calculate time offset between two timestamp files.
+        Merge multiple timestamp files into a single sorted array.
+        
+        Used for multi-channel correlation: combine Ch1, Ch2, Ch3, Ch4 from same site.
         
         Args:
-            local_file: Path to local site timestamp file
-            remote_file: Path to remote site timestamp file
+            file_list: List of timestamp file paths to merge
+        
+        Returns:
+            Tuple of (merged_timestamps, combined_info)
+        """
+        if not file_list:
+            raise ValueError("Empty file list provided")
+        
+        logger.info(f"Merging {len(file_list)} timestamp files...")
+        
+        all_timestamps = []
+        total_events = 0
+        file_infos = []
+        
+        for filepath in file_list:
+            timestamps, info = self.read_timestamp_file(filepath)
+            all_timestamps.append(timestamps)
+            total_events += len(timestamps)
+            file_infos.append(info)
+            logger.info(f"  - {filepath.name}: {len(timestamps)} events")
+        
+        # Merge all arrays
+        merged = np.concatenate(all_timestamps)
+        
+        # Sort by timestamp (important for correlation algorithm)
+        merged = np.sort(merged)
+        
+        # Calculate combined statistics
+        time_span_sec = (merged[-1] - merged[0]) / 1e12 if len(merged) > 1 else 0
+        
+        combined_info = {
+            'num_files': len(file_list),
+            'file_names': [f.name for f in file_list],
+            'num_timestamps': len(merged),
+            'time_span_sec': time_span_sec,
+            'first_timestamp': merged[0] if len(merged) > 0 else 0,
+            'last_timestamp': merged[-1] if len(merged) > 0 else 0,
+            'mean_rate_hz': len(merged) / time_span_sec if time_span_sec > 0 else 0,
+            'individual_file_info': file_infos
+        }
+        
+        logger.info(f"Merged result: {len(merged)} total timestamps, span={time_span_sec:.2f}s")
+        
+        return merged, combined_info
+    
+    def run_correlation(self, local_files: List[Path], remote_files: List[Path]) -> Dict[str, Any]:
+        """
+        Main entry point - calculate time offset between timestamp file sets.
+        
+        Args:
+            local_files: List of local site timestamp files (can be single file or multiple channels)
+            remote_files: List of remote site timestamp files
         
         Returns:
             Dictionary with results:
@@ -273,16 +351,23 @@ class TimeOffsetCalculator:
         try:
             logger.info("="*60)
             logger.info("Starting time offset correlation calculation")
-            logger.info(f"Local file: {local_file.name}")
-            logger.info(f"Remote file: {remote_file.name}")
+            logger.info(f"Local files: {[f.name for f in local_files]}")
+            logger.info(f"Remote files: {[f.name for f in remote_files]}")
             logger.info("="*60)
             
-            # Step 1: Read timestamp files
-            local_timestamps, local_info = self.read_timestamp_file(local_file)
-            remote_timestamps, remote_info = self.read_timestamp_file(remote_file)
+            # Step 1: Read and merge timestamp files
+            if len(local_files) == 1:
+                local_timestamps, local_info = self.read_timestamp_file(local_files[0])
+            else:
+                local_timestamps, local_info = self.merge_timestamp_files(local_files)
+            
+            if len(remote_files) == 1:
+                remote_timestamps, remote_info = self.read_timestamp_file(remote_files[0])
+            else:
+                remote_timestamps, remote_info = self.merge_timestamp_files(remote_files)
             
             if len(local_timestamps) == 0 or len(remote_timestamps) == 0:
-                raise ValueError("One or both files contain no timestamps")
+                raise ValueError("One or both file sets contain no timestamps")
             
             # Step 2: Create histogram buffers
             buff1 = self.create_histogram_buffer(local_timestamps)
