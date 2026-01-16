@@ -145,9 +145,9 @@ class PlotUpdater:
                 zmq_exec(self.tc, "REC:STOP")
                 # Infinite number of records (continuous streaming)
                 zmq_exec(self.tc, "REC:NUM 0")
-                # 1 second duration per record (in picoseconds)
-                zmq_exec(self.tc, "REC:DURation 1000000000000")
-                logger.info("Configured Time Controller REC settings")
+                # Set very long duration per record (1000 seconds = ~16.7 minutes in picoseconds)
+                zmq_exec(self.tc, "REC:DURation 1000000000000000")  # 1000 seconds
+                logger.info("Configured Time Controller REC settings (1000s duration, infinite records)")
             except Exception as e:
                 logger.error(f"Failed to configure REC settings: {e}")
                 return
@@ -265,7 +265,11 @@ class PlotUpdater:
     def stop_streaming(self):
         """Stop timestamp streaming and DLT acquisitions."""
         if not self.streaming_active:
+            logger.debug("stop_streaming called but streaming not active, ignoring")
             return
+        
+        # Set flag immediately to prevent re-entry
+        self.streaming_active = False
         
         logger.info("Stopping timestamp streaming")
         
@@ -317,8 +321,6 @@ class PlotUpdater:
                         logger.info(f"Disabled RAW{channel}:SEND on Time Controller")
                     except Exception as e:
                         logger.error(f"Failed to disable streaming on channel {channel}: {e}")
-        
-        self.streaming_active = False
 
     def _start_file_tail_threads(self):
         """Start background readers that tail the DLT output files and fill local buffers."""

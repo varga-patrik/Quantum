@@ -222,7 +222,7 @@ class TimeOffsetTab:
         self.tshift_var = tk.StringVar(value="100000000")
         tk.Entry(params_grid, textvariable=self.tshift_var, width=12,
                 font=('Courier New', 9)).grid(row=2, column=1, padx=5, pady=3)
-        tk.Label(params_grid, text="ps (100 ms)", background='#FFF3E0',
+        tk.Label(params_grid, text="ps (0.1 ms)", background='#FFF3E0',
                 font=('Arial', 8), foreground='#666').grid(row=2, column=2, sticky='w', padx=5)
     
     def _build_action_buttons(self, parent):
