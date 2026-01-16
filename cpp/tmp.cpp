@@ -4,8 +4,25 @@
 #include "Correlator.h"
 #include <filesystem>
 
-//Delta T = 81.358.000
-//Delta T = 82.296.000
+//2^24
+//max(S) = 14.282766, kmax = 50622
+//Delta T = 103.673856 microsec
+
+//2^23
+//max(S) = 9.202164, kmax = 50622
+//Delta T = 103.673856 microsec
+
+//2^22
+//max(S) = 6.703411, kmax = 50622
+//Delta T = 103.673856 microsec
+
+//2^21
+//max(S) = 5.150041, kmax = 1610403
+//Delta T = 3298.105344 microsec
+
+//2^20
+//max(S) = 4.920758, kmax = 831269
+//Delta T = 1702.438912 microsec
 
 std::vector<std::string> collectFiles(const std::string& folder, const std::string& condition) {
     std::vector<std::string> files;
@@ -28,7 +45,7 @@ std::vector<std::string> collectFiles(const std::string& folder, const std::stri
 }
 
 int main(int argc, char* argv[]) {
-    Correlator correlator(100000, (1ULL << 20));
+    Correlator correlator(100000, (1ULL << 23));
 
     correlator.Tshift = 0;
 
