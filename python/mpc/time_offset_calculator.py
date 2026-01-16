@@ -6,7 +6,6 @@ calculate time offset between two sites' timestamp streams.
 """
 
 import numpy as np
-import struct
 import logging
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, List
@@ -85,10 +84,14 @@ class TimeOffsetCalculator:
             logger.debug(f"First 10 timestamps: {timestamps[:10]}")
             logger.debug(f"Last 10 timestamps: {timestamps[-10:]}")
             
-            # Check if timestamps are monotonically increasing
-            if not np.all(np.diff(timestamps) >= 0):
-                non_monotonic = np.sum(np.diff(timestamps) < 0)
-                logger.warning(f"⚠️  {non_monotonic} timestamp decreases detected! "
+            # Check if timestamps are monotonically increasing (sample check to avoid memory overhead)
+            # For 10-minute files, np.diff would create 360M element array - instead sample 10k points
+            sample_size = min(10000, len(timestamps))
+            sample_indices = np.linspace(0, len(timestamps)-1, sample_size, dtype=np.int64)
+            sample_ts = timestamps[sample_indices]
+            if not np.all(np.diff(sample_ts) >= 0):
+                non_monotonic = np.sum(np.diff(sample_ts) < 0)
+                logger.warning(f"⚠️  {non_monotonic} timestamp decreases in sample! "
                              f"Data may have counter resets or wrong format.")
         
         # Calculate file info
@@ -129,13 +132,12 @@ class TimeOffsetCalculator:
         # Initialize complex buffer (matches fftw_complex in C++)
         buffer = np.zeros(self.N, dtype=np.complex128)
         
-        # Bin timestamps using vectorized operations (1000x faster than Python loop)
+        # Bin timestamps using vectorized operations
         # Apply shift and calculate bin indices for all timestamps at once
         shifted_times = timestamps.astype(np.int64) + self.Tshift
         bin_indices = (shifted_times // self.tau) % self.N
         
-        # Count timestamps in each bin using numpy's bincount (optimized C code)
-        # This is equivalent to the loop but runs in compiled C code
+        # Count timestamps in each bin using numpy's bincount
         counts = np.bincount(bin_indices.astype(np.int64), minlength=self.N)
         buffer.real = counts[:self.N]  # Set real part to counts, imaginary stays 0
         
@@ -180,24 +182,23 @@ class TimeOffsetCalculator:
         """
         logger.info("Computing FFT cross-correlation...")
         
-        # Step 1: Forward FFT
+        # Histogram buffers are real-valued, so we can use real FFT
         logger.debug("Forward FFT...")
-        fft1 = np.fft.fft(buff1)
-        fft2 = np.fft.fft(buff2)
+        fft1 = np.fft.rfft(buff1.real)  # Only use real part, ignore imaginary (all zeros)
+        fft2 = np.fft.rfft(buff2.real)
         
         # Step 2: Cross-correlation in frequency domain
-        logger.debug("Computing cross-correlation in frequency domain...")
-        cross_corr_freq = fft1 * np.conj(fft2)
+        # Multiply by conjugate and normalize by N in one step to save memory
+        logger.debug("Computing cross-correlation...")
+        np.multiply(fft1, np.conj(fft2), out=fft1)  # In-place operation saves memory
+        fft1 /= self.N
         
-        # Step 3: Inverse FFT
+        # Step 3: Inverse FFT (in-place where possible)
         logger.debug("Inverse FFT...")
-        correlation = np.fft.ifft(cross_corr_freq)
+        correlation_real = np.fft.irfft(fft1, n=self.N)  # Returns real array directly
         
-        # Normalize by N (matches C++ cbuff[n][0] /= N)
-        correlation = correlation / self.N
-        
-        # Take real part only (imaginary should be negligible)
-        correlation_real = correlation.real
+        # Clear FFT buffers to free memory before statistics calculation
+        del fft1, fft2
         
         # Step 4: Normalize by statistics (matches C++ S[n] = (cbuffr[n] - cmean) / cvar)
         mean = np.mean(correlation_real)
@@ -205,16 +206,17 @@ class TimeOffsetCalculator:
         
         logger.info(f"Correlation stats: mean={mean:.6f}, std={std:.6f}")
         
-        # Normalized correlation (in units of standard deviations)
-        correlation_normalized = (correlation_real - mean) / std
+        # Normalized correlation (in units of standard deviations) - in-place operation
+        correlation_real -= mean
+        correlation_real /= std
         
         # Step 5: Find peak
-        peak_index = np.argmax(correlation_normalized)
-        peak_value = correlation_normalized[peak_index]
+        peak_index = np.argmax(correlation_real)
+        peak_value = correlation_real[peak_index]
         
         logger.info(f"Peak found at index {peak_index}, value={peak_value:.2f}σ")
         
-        return correlation_normalized, peak_value, peak_index
+        return correlation_real, peak_value, peak_index
     
     def assess_confidence(self, peak_value: float, correlation_func: np.ndarray, 
                          peak_index: int) -> Dict[str, Any]:
