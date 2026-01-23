@@ -7,7 +7,6 @@ calculate time offset between two sites' timestamp streams.
 This implementation matches the C++ version exactly:
 - Streaming file reads (low memory usage)
 - Full complex FFT (matching FFTW behavior)
-- Same binning formula: (ps_in_second + Tshift + ref_second * 1e12) / tau % N
 """
 
 import numpy as np
@@ -23,7 +22,6 @@ class TimeOffsetCalculator:
     """
     FFT-based cross-correlation calculator for timestamp synchronization.
     
-    Matches C++ Correlator implementation exactly:
     - Streaming file reads to minimize memory usage
     - Full complex DFT (not real FFT) to match FFTW behavior
     - Same binning and correlation formula
@@ -37,7 +35,6 @@ class TimeOffsetCalculator:
             tau: Bin width in picoseconds (default: 2048 ps = 2.048 ns)
             N: Number of FFT bins (default: 2^23 = 8,388,608)
             Tshift: Initial time shift in picoseconds (default: 0)
-                   C++ tmp.cpp also uses Tshift = 0
         """
         self.tau = tau
         self.N = N
@@ -50,7 +47,6 @@ class TimeOffsetCalculator:
         """
         Read binary file and create histogram buffer using streaming (low memory).
         
-        Matches C++ read_data() function exactly:
         - Reads in chunks (doesn't load whole file into memory)
         - Directly bins into histogram: totalTime = (ps + Tshift) + (second * 1e12)
         - bin_index = (totalTime / tau) % N
@@ -74,7 +70,7 @@ class TimeOffsetCalculator:
         
         logger.info(f"Reading {num_pairs:,} timestamp pairs ({file_size / 1024**2:.1f} MB)")
         
-        # Initialize histogram buffer (matches C++ buff[k][0] = 0.0)
+        # Initialize histogram buffer
         buffer = np.zeros(self.N, dtype=np.float64)
         
         # Track statistics
@@ -82,7 +78,7 @@ class TimeOffsetCalculator:
         first_timestamp = None
         last_timestamp = None
         
-        # Read in chunks like C++ does
+        # Read in chunks
         chunk_size = self.chunk_size * 2  # Each pair is 2 uint64 values
         
         with open(filepath, 'rb') as f:
@@ -105,18 +101,18 @@ class TimeOffsetCalculator:
                     raw_values = raw_values[:num_read]
                 
                 # Process pairs: [ps_in_second, ref_second, ps_in_second, ref_second, ...]
-                # Match C++ exactly: for (size_t k = 0; k + 1 < numRead; k += 2)
                 ps_values = raw_values[0::2]  # Even indices: picoseconds within second
                 sec_values = raw_values[1::2]  # Odd indices: second counter
                 
-                # Match C++ formula exactly:
-                # uint64_t totalTime = (tmpBuff[k] + Tshift) + (tmpBuff[k + 1] * 1e12);
-                # size_t r = (size_t)(totalTime / tau) % N;
+                # Calculate total time and bin indices
+                total_times = (ps_values.astype(np.uint64) + np.uint64(self.Tshift)) + \
+                             (sec_values.astype(np.uint64) * np.uint64(int(1e12)))
+                bin_indices = (total_times // np.uint64(self.tau)) % np.uint64(self.N)
                 total_times = (ps_values.astype(np.uint64) + np.uint64(self.Tshift)) + \
                              (sec_values.astype(np.uint64) * np.uint64(int(1e12)))
                 bin_indices = (total_times // np.uint64(self.tau)) % np.uint64(self.N)
                 
-                # Count into histogram (matches C++ buff[r][0] += 1.0)
+                # Count into histogram
                 np.add.at(buffer, bin_indices.astype(np.int64), 1.0)
                 
                 total_events += len(ps_values)
@@ -217,11 +213,8 @@ class TimeOffsetCalculator:
         """
         Compute FFT cross-correlation between two histogram buffers.
         
-        Matches C++ CalculateDeltaT() function EXACTLY:
         1. Forward FFT on both buffers (full complex FFT)
         2. Cross-multiply: cbuff_c[k] = buff1_c[k] * conj(buff2_c[k])
-           C++ formula: real = real1*real2 + imag1*imag2
-                        imag = -imag1*real2 + real1*imag2
            This is buff1 * conj(buff2) in complex notation
         3. Inverse FFT to get correlation function
         4. Divide by N (after inverse)
@@ -238,51 +231,36 @@ class TimeOffsetCalculator:
         logger.info("Computing FFT cross-correlation (matching C++ exactly)...")
         
         # Step 1: Forward FFT on both buffers
-        # C++ uses fftw_plan_dft_1d with FFTW_FORWARD (full complex FFT)
-        # For real input, np.fft.fft returns the same as FFTW on complex input with imag=0
         logger.debug("Forward FFT...")
         fft1 = np.fft.fft(buff1)  # Full complex FFT (matches FFTW on real data)
         fft2 = np.fft.fft(buff2)
         
         # Step 2: Cross-correlation in frequency domain
-        # C++ code:
-        #   cbuff_c[k][0] = real1 * real2 + imag1 * imag2;  // real part
-        #   cbuff_c[k][1] = -imag1 * real2 + real1 * imag2; // imag part
-        # Let's verify: for z1 = r1 + i1*j, z2 = r2 + i2*j
-        #   conj(z1) * z2 = (r1 - i1*j)(r2 + i2*j) = (r1*r2 + i1*i2) + (r1*i2 - i1*r2)*j
-        # So C++ computes: conj(buff1_c) * buff2_c
         logger.debug("Computing cross-correlation...")
-        cbuff_c = np.conj(fft1) * fft2  # conj(buff1) * buff2 to match C++
+        cbuff_c = np.conj(fft1) * fft2
         
         # Free FFT buffers
         del fft1, fft2
         gc.collect()
         
         # Step 3: Inverse FFT
-        # C++ uses FFTW_BACKWARD (inverse DFT)
-        # IMPORTANT: FFTW backward transform does NOT divide by N
-        # np.fft.ifft DOES divide by N automatically
-        # So we need to multiply by N to match C++ behavior
         logger.debug("Inverse FFT...")
         cbuff = np.fft.ifft(cbuff_c) * self.N  # Multiply by N to match FFTW behavior
         del cbuff_c
         gc.collect()
         
         # Step 4: Divide by N and take real part
-        # C++ code: cbuff[n][0] /= N; cbuffr[n] = cbuff[n][0];
         cbuffr = (cbuff.real / self.N).copy()
         del cbuff
         gc.collect()
         
         # Step 5: Calculate mean and variance (standard deviation)
-        # C++ code: cmean = vec_mean(cbuffr, N); cvar = vec_variance(cbuffr, cmean, N);
-        # C++ variance uses (n-1) denominator: sqrt(sum((x-mean)^2) / (n-1))
         cmean = np.mean(cbuffr)
-        cvar = np.std(cbuffr, ddof=1)  # ddof=1 matches C++ (n-1) denominator
+        cvar = np.std(cbuffr, ddof=1)
         
         logger.info(f"Correlation stats: MEAN={cmean:.10e}, VAR(std)={cvar:.10e}")
         
-        # Step 6: Normalize: S[n] = (cbuffr[n] - cmean) / cvar
+        # Step 6: Normalize
         S = (cbuffr - cmean) / cvar
         del cbuffr
         gc.collect()
@@ -392,7 +370,6 @@ class TimeOffsetCalculator:
             gc.collect()
             
             # Step 3: Calculate offset
-            # C++ code: return this->tau * (uint64_t)smax.kmax;
             offset_ps = self.tau * peak_index
             offset_ms = offset_ps / 1e9  # Convert to milliseconds
             
