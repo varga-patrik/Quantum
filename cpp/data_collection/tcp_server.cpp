@@ -410,7 +410,7 @@ int main(void)
                     std::string command, start_time;
                     iss >> command >> start_time;
 
-                    //fs.wait_until(start_time.c_str());
+                    fs.wait_until(start_time.c_str());
 
                     path.clear();
                     path << "\"" << pathbuffer << "\\timestamps_acquisition_wigner.py\"";
@@ -418,7 +418,7 @@ int main(void)
                 }
 
                 if(fs.is_same_str(recvbuf, "read_data_file")){
-                    std::vector<std::string> files = collectFiles("./data", "wigner");
+                    std::vector<std::string> files = collectFiles("C:\\Users\\DR KIS\\Desktop\\vp\\Quantum\\data", "wigner");
                     for (const auto& file : files) {
                         sendFile(ClientSocket, file);
                     }
@@ -433,7 +433,7 @@ int main(void)
                     send(ClientSocket, eotHeader, 3, 0);
                     send(ClientSocket, eotMarker.c_str(), eotMarker.size(), 0);
 
-                    deleteFiles("C:\\Users\\DR KIS\\Desktop\\vp\\Quantum\\data", "wigner");
+                    //deleteFiles("C:\\Users\\DR KIS\\Desktop\\vp\\Quantum\\data", "wigner");
                 }
 
                 if (fs.is_same_str(recvbuf, "read_correlator_buffer")) {

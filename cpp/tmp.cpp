@@ -52,5 +52,5 @@ int main(int argc, char* argv[]) {
     std::vector<std::string> files_bme = collectFiles("../data", "timestamps_bme");
     std::vector<std::string> files_wigner = collectFiles("../data", "timestamps_wigner");
 
-    correlator.runCorrelation(false, files_bme, files_wigner, 2048);
+    fs.scpi_terminal();
 }
