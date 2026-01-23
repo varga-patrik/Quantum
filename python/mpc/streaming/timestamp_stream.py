@@ -165,47 +165,33 @@ class CoincidenceCounter:
         """
         Count coincidences between local and remote timestamps.
         
-        Uses optimized O(n+m) sliding window algorithm.
-        Each remote timestamp can be matched MULTIPLE TIMES (for uncertain pairing).
+        Uses vectorized binary search for O(n log m) performance.
         Counts all local timestamps that have at least one remote timestamp within the window.
         
         Args:
             local_timestamps: Local timestamps in picoseconds (sorted)
             remote_timestamps: Remote timestamps in picoseconds (sorted)
             time_offset_ps: Time offset to apply to remote timestamps (from C++ Correlator)
+                           Positive offset means remote is AHEAD, so we SUBTRACT to align.
         
         Returns:
-            Number of coincidences found (multiple matches allowed)
+            Number of coincidences found
         """
         if len(local_timestamps) == 0 or len(remote_timestamps) == 0:
             return 0
         
-        # Apply time offset to remote timestamps
-        remote_adjusted = remote_timestamps + time_offset_ps
+        # Apply time offset to remote timestamps - SUBTRACT because positive offset 
+        # means remote is ahead, so we shift it back to align with local
+        remote_adjusted = remote_timestamps.astype(np.int64) - time_offset_ps
+        local_int = local_timestamps.astype(np.int64)
         
-        coincidences = 0
-        j = 0  # Pointer for start of search window
+        # Vectorized binary search: for each local, find if ANY remote is in window
+        left_bounds = np.searchsorted(remote_adjusted, local_int - self.window_ps, side='left')
+        right_bounds = np.searchsorted(remote_adjusted, local_int + self.window_ps, side='right')
         
-        # For each local timestamp
-        for local_ts in local_timestamps:
-            # Move window start pointer forward (skip out-of-window timestamps)
-            while j < len(remote_adjusted) and remote_adjusted[j] < local_ts - self.window_ps:
-                j += 1
-            
-            if j >= len(remote_adjusted):
-                break  # No more remote timestamps to check
-            
-            # Check if ANY remote timestamp exists within window [local_ts - window, local_ts + window]
-            k = j
-            found_match = False
-            while k < len(remote_adjusted) and remote_adjusted[k] <= local_ts + self.window_ps:
-                # Any remote timestamp in window counts as a coincidence
-                found_match = True
-                break  # Found at least one match, count it and move to next local timestamp
-                k += 1
-            
-            if found_match:
-                coincidences += 1
+        # Count local timestamps that have at least one match
+        has_match = right_bounds > left_bounds
+        coincidences = int(np.sum(has_match))
         
         return coincidences
     

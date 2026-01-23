@@ -21,6 +21,7 @@ from gui_components import (
 from gui_components.file_transfer_manager import FileTransferManager
 from gui_components.peer_command_handlers import PeerCommandHandlers
 from gui_components.time_offset_tab import TimeOffsetTab
+from gui_components.offline_correlation_tab import OfflineCorrelationTab
 from mock_time_controller import MockTimeController, is_mock_controller
 from peer_connection import PeerConnection
 from connection_dialog import show_connection_dialog
@@ -81,6 +82,7 @@ class App:
         self._build_polarizer_tab()
         self._build_gps_sync_tab()
         self._build_time_offset_tab()
+        self._build_offline_correlation_tab()
 
         # Auto-start counter display (for singles rates monitoring)
         # This starts the background loop that reads detector counters
@@ -369,10 +371,12 @@ class App:
         self.tab_polarizer = ttk.Frame(self.notebook)
         self.tab_gps_sync = ttk.Frame(self.notebook)
         self.tab_time_offset = ttk.Frame(self.notebook)
+        self.tab_offline_correlation = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_plot, text="Plotolás")
         self.notebook.add(self.tab_polarizer, text="Polarizáció kontroller")
         self.notebook.add(self.tab_gps_sync, text="GPS Szinkronizáció")
         self.notebook.add(self.tab_time_offset, text="Időeltolás Kalkulátor")
+        self.notebook.add(self.tab_offline_correlation, text="Offline Korreláció")
         self.notebook.grid(row=2, column=0, sticky="news")
 
     def _build_plot_frame(self):
@@ -1187,6 +1191,16 @@ class App:
         """Build the time offset calculator tab."""
         self.time_offset_tab_component = TimeOffsetTab(
             self.tab_time_offset,
+            app_ref=self,
+            bg_color=self.bg_color,
+            fg_color=self.fg_color,
+            action_color=self.action_color
+        )
+
+    def _build_offline_correlation_tab(self):
+        """Build the offline correlation analysis tab."""
+        self.offline_correlation_tab_component = OfflineCorrelationTab(
+            self.tab_offline_correlation,
             app_ref=self,
             bg_color=self.bg_color,
             fg_color=self.fg_color,

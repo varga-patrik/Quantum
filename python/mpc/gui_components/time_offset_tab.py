@@ -210,19 +210,19 @@ class TimeOffsetTab:
         # Number of bins
         tk.Label(params_grid, text="FFT Bins (N):", background='#FFF3E0',
                 font=('Arial', 9)).grid(row=1, column=0, sticky='e', padx=5, pady=3)
-        self.n_var = tk.StringVar(value="1048576")
+        self.n_var = tk.StringVar(value="8388608")
         tk.Entry(params_grid, textvariable=self.n_var, width=12,
                 font=('Courier New', 9)).grid(row=1, column=1, padx=5, pady=3)
-        tk.Label(params_grid, text="(2^20)", background='#FFF3E0',
+        tk.Label(params_grid, text="(2^23)", background='#FFF3E0',
                 font=('Arial', 8), foreground='#666').grid(row=1, column=2, sticky='w', padx=5)
         
         # Initial shift
         tk.Label(params_grid, text="Initial Shift:", background='#FFF3E0',
                 font=('Arial', 9)).grid(row=2, column=0, sticky='e', padx=5, pady=3)
-        self.tshift_var = tk.StringVar(value="100000000")
+        self.tshift_var = tk.StringVar(value="0")
         tk.Entry(params_grid, textvariable=self.tshift_var, width=12,
                 font=('Courier New', 9)).grid(row=2, column=1, padx=5, pady=3)
-        tk.Label(params_grid, text="ps (0.1 ms)", background='#FFF3E0',
+        tk.Label(params_grid, text="ps (0 = auto)", background='#FFF3E0',
                 font=('Arial', 8), foreground='#666').grid(row=2, column=2, sticky='w', padx=5)
     
     def _build_action_buttons(self, parent):
@@ -573,7 +573,10 @@ class TimeOffsetTab:
             y = corr_func[start:end]
             
             self.ax.plot(x, y, color='#1976D2', linewidth=1.5)
-            self.ax.axvline(peak_index, color='red', linestyle='--', linewidth=2, label=f'Peak at {peak_index}')
+            # Horizontal line at peak height (not vertical - vertical hides the peak!)
+            peak_value = result['peak_value']
+            self.ax.axhline(peak_value, color='red', linestyle='--', linewidth=1.5, alpha=0.7, 
+                           label=f'Peak: {peak_value:.2f}σ at index {peak_index}')
             self.ax.axhline(0, color='gray', linestyle='-', linewidth=0.5, alpha=0.5)
             
             self.ax.set_title(f'Cross-Correlation Function (zoomed near peak)', fontsize=10)
@@ -603,8 +606,10 @@ class TimeOffsetTab:
         peak_index = self.last_result['peak_index']
         
         # Full plot
+        peak_value = self.last_result['peak_value']
         ax1.plot(corr_func, color='#1976D2', linewidth=1, alpha=0.7)
-        ax1.axvline(peak_index, color='red', linestyle='--', linewidth=2, label=f'Peak at {peak_index}')
+        ax1.axhline(peak_value, color='red', linestyle='--', linewidth=1.5, alpha=0.7,
+                   label=f'Peak: {peak_value:.2f}σ at index {peak_index}')
         ax1.axhline(0, color='gray', linestyle='-', linewidth=0.5, alpha=0.5)
         ax1.set_title('Full Cross-Correlation Function', fontsize=12, fontweight='bold')
         ax1.set_xlabel('Lag Index', fontsize=10)
@@ -618,7 +623,8 @@ class TimeOffsetTab:
         end = min(len(corr_func), peak_index + zoom_range)
         
         ax2.plot(range(start, end), corr_func[start:end], color='#1976D2', linewidth=2)
-        ax2.axvline(peak_index, color='red', linestyle='--', linewidth=2, label=f'Peak at {peak_index}')
+        ax2.axhline(peak_value, color='red', linestyle='--', linewidth=2, alpha=0.7,
+                   label=f'Peak: {peak_value:.2f}σ at index {peak_index}')
         ax2.axhline(0, color='gray', linestyle='-', linewidth=0.5, alpha=0.5)
         ax2.set_title('Zoomed View Around Peak', fontsize=12, fontweight='bold')
         ax2.set_xlabel('Lag Index', fontsize=10)
