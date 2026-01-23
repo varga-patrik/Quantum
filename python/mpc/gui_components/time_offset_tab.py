@@ -71,15 +71,15 @@ class TimeOffsetTab:
     
     def _build_ui(self):
         """Build the complete UI for the time offset tab."""
-        # Main container with padding
-        container = tk.Frame(self.parent, background=self.bg_color)
+        # Main container with padding - use light background
+        container = tk.Frame(self.parent, background='#F5F5F5')
         container.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         
         # Header
         header = tk.Label(container, 
                          text="⏱️ Time Offset Calculator (FFT Cross-Correlation)",
                          font=('Arial', 12, 'bold'),
-                         background=self.bg_color, foreground=self.fg_color)
+                         background='#F5F5F5', foreground='#1E1E1E')
         header.pack(pady=(0, 8))
         
         # File selection section
@@ -207,13 +207,13 @@ class TimeOffsetTab:
         tk.Label(params_grid, text="ps (2.048 ns)", background='#FFF3E0',
                 font=('Arial', 8), foreground='#666').grid(row=0, column=2, sticky='w', padx=5)
         
-        # Number of bins
-        tk.Label(params_grid, text="FFT Bins (N):", background='#FFF3E0',
+        # Number of bins (as power of 2)
+        tk.Label(params_grid, text="FFT Bins (2^N):", background='#FFF3E0',
                 font=('Arial', 9)).grid(row=1, column=0, sticky='e', padx=5, pady=3)
-        self.n_var = tk.StringVar(value="8388608")
-        tk.Entry(params_grid, textvariable=self.n_var, width=12,
+        self.n_power_var = tk.StringVar(value="23")
+        tk.Entry(params_grid, textvariable=self.n_power_var, width=12,
                 font=('Courier New', 9)).grid(row=1, column=1, padx=5, pady=3)
-        tk.Label(params_grid, text="(2^23)", background='#FFF3E0',
+        tk.Label(params_grid, text="(23 = 8.4M bins)", background='#FFF3E0',
                 font=('Arial', 8), foreground='#666').grid(row=1, column=2, sticky='w', padx=5)
         
         # Initial shift
@@ -331,6 +331,7 @@ class TimeOffsetTab:
         self.ax.grid(True, alpha=0.3)
         
         self.canvas = FigureCanvasTkAgg(self.fig, master=plot_frame)
+        self.canvas.get_tk_widget().configure(background='#F5F5F5')
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         self.canvas.draw()
     
@@ -477,8 +478,15 @@ class TimeOffsetTab:
         # Parse parameters
         try:
             tau = int(self.tau_var.get())
-            N = int(self.n_var.get())
+            n_power = int(self.n_power_var.get())
             Tshift = int(self.tshift_var.get())
+            
+            # Validate power of 2
+            if n_power < 10 or n_power > 30:
+                messagebox.showerror("Invalid Parameter", "FFT bins power must be between 10 and 30")
+                return
+            
+            N = 2 ** n_power  # Calculate actual N from power
         except ValueError:
             messagebox.showerror("Invalid Parameters", "Please enter valid integer parameters.")
             return
@@ -600,7 +608,9 @@ class TimeOffsetTab:
         plot_window.title("Full Correlation Function")
         plot_window.geometry("1000x600")
         
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8))
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), facecolor='#F5F5F5')
+        ax1.set_facecolor('#FFFFFF')
+        ax2.set_facecolor('#FFFFFF')
         
         corr_func = self.last_result['correlation_func']
         peak_index = self.last_result['peak_index']

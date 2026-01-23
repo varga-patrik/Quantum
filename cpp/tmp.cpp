@@ -1,6 +1,7 @@
 #include <iostream>
 #include <fstream>
 #include <vector>
+#include "fs_util.h"
 #include "Correlator.h"
 #include <filesystem>
 
@@ -53,4 +54,16 @@ int main(int argc, char* argv[]) {
     std::vector<std::string> files_wigner = collectFiles("../data", "timestamps_wigner");
 
     correlator.runCorrelation(false, files_bme, files_wigner, 2048);
+
+    /*std::string ip_text = "172.26.34.159";
+    std::string output = "diff_data.csv";
+    FSUtil fs(6000, ip_text, output);
+
+    for(int i=0; i<10; i++){
+        std::string start_time = fs.start_time();
+        std::cout << "Waiting for start time: " << start_time << std::endl; 
+        fs.wait_until(start_time.c_str());
+        std::cout << fs.print_gpstime() << std::endl;
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }*/
 }

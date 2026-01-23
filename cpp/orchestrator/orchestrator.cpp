@@ -529,11 +529,9 @@ void Orchestrator::clearDataFolder() {
             return;
         }
         
-        int filesDeleted = 0;
         for (const auto& entry : std::filesystem::directory_iterator(dataFolder)) {
-            if (std::filesystem::is_regular_file(entry)) {
+            if (std::filesystem::is_regular_file(entry) && entry.path().extension() == ".bin") {
                 std::filesystem::remove(entry);
-                filesDeleted++;
             }
         }
         

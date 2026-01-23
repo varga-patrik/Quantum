@@ -80,19 +80,19 @@ class OfflineCorrelationTab:
     
     def _build_ui(self):
         """Build the complete UI for the offline correlation tab."""
-        # Main container
-        container = tk.Frame(self.parent, background=self.bg_color)
+        # Main container - use light background
+        container = tk.Frame(self.parent, background='#F5F5F5')
         container.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         
         # Header
         header = tk.Label(container, 
                          text="📊 Offline Correlation Analysis",
                          font=('Arial', 12, 'bold'),
-                         background=self.bg_color, foreground=self.fg_color)
+                         background='#F5F5F5', foreground='#1E1E1E')
         header.pack(pady=(0, 8))
         
         # Top section: File selection and parameters
-        top_frame = tk.Frame(container, background=self.bg_color)
+        top_frame = tk.Frame(container, background='#F5F5F5')
         top_frame.pack(fill=tk.X, pady=(0, 5))
         
         # File selection (left)
@@ -324,12 +324,13 @@ class OfflineCorrelationTab:
             self.channel_labels.append(lbl)
         
         # Right: Plots
-        plot_frame = tk.Frame(results_frame, background=self.bg_color)
+        plot_frame = tk.Frame(results_frame, background='#F5F5F5')
         plot_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
         # Create figure with 2 subplots
-        self.fig, (self.ax1, self.ax2) = plt.subplots(1, 2, figsize=(10, 4))
-        self.fig.patch.set_facecolor(self.bg_color)
+        self.fig, (self.ax1, self.ax2) = plt.subplots(1, 2, figsize=(10, 4), facecolor='#F5F5F5')
+        self.ax1.set_facecolor('#FFFFFF')
+        self.ax2.set_facecolor('#FFFFFF')
         
         self.ax1.set_title('Coincidence Time Series', fontsize=10, fontweight='bold')
         self.ax1.set_xlabel('Time (s)')
@@ -344,6 +345,7 @@ class OfflineCorrelationTab:
         self.fig.tight_layout()
         
         self.canvas = FigureCanvasTkAgg(self.fig, master=plot_frame)
+        self.canvas.get_tk_widget().configure(background='#F5F5F5')
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         self.canvas.draw()
     

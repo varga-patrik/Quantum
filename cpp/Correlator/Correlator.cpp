@@ -49,11 +49,11 @@ size_t Correlator::read_data(const std::string& filePath, int buffId, uint64_t t
 
         if (s == 0) {
             //adatok kiirasa ellenorzeskeppen
-            print_uintvec("tmp_buff", tmpBuff.data(), std::min<size_t>(10, numRead));
+            //print_uintvec("tmp_buff", tmpBuff.data(), std::min<size_t>(10, numRead));
         }
 
         histogram(tmpBuff.data(), numRead, hin, Nbin, Tbin);
-        std::cerr << "dTmean[" << s++ << "] = " << dTmean(tmpBuff.data(), numRead) << ",\t";
+        //std::cerr << "dTmean[" << s++ << "] = " << dTmean(tmpBuff.data(), numRead) << ",\t";
     }
 
     hist_norm(hin, hout, Nbin);
