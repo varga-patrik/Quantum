@@ -343,7 +343,7 @@ std::string FSUtil::start_time(){
             }
 
             std::ostringstream new_time;
-            new_time << hour << "," << minute << "," << (int)second << ".650000000000"; //egyelőre .65 a vége mivel kb így lesz közel az új másodperc kezdetéhez
+            new_time << hour << "," << minute << "," << (int)second << ".000000000000"; 
             return new_time.str();
         }
         else

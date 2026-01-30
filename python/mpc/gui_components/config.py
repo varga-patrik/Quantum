@@ -1,5 +1,8 @@
 """GUI configuration constants and theme settings."""
 
+# Debug mode - set to True for extensive logging
+DEBUG_MODE = True  # Set to True to enable detailed diagnostic logs
+
 # Hardware IP addresses for SERVER side (Wigner)
 SERVER_TC_ADDRESS = "148.6.27.28"
 SERVER_FS740_ADDRESS = "148.6.27.165"

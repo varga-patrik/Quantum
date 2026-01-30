@@ -6,7 +6,7 @@ using the calculated time offset. Similar to live correlation but for offline an
 """
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox, scrolledtext
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import numpy as np
@@ -18,9 +18,16 @@ import time
 
 from streaming.timestamp_stream import CoincidenceCounter
 from gui_components.helpers import format_number
-from gui_components.config import COINCIDENCE_WINDOW_PS
+from gui_components.config import COINCIDENCE_WINDOW_PS, DEBUG_MODE
 
 logger = logging.getLogger(__name__)
+
+# Import file validator
+try:
+    from diagnostic_utils.file_validator import TimestampFileValidator
+except ImportError:
+    TimestampFileValidator = None
+    logging.warning("File validator not available")
 
 
 class OfflineCorrelationTab:
@@ -80,19 +87,19 @@ class OfflineCorrelationTab:
     
     def _build_ui(self):
         """Build the complete UI for the offline correlation tab."""
-        # Main container
-        container = tk.Frame(self.parent, background=self.bg_color)
+        # Main container - use light background
+        container = tk.Frame(self.parent, background='#F5F5F5')
         container.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
         
         # Header
         header = tk.Label(container, 
                          text="📊 Offline Correlation Analysis",
                          font=('Arial', 12, 'bold'),
-                         background=self.bg_color, foreground=self.fg_color)
+                         background='#F5F5F5', foreground='#1E1E1E')
         header.pack(pady=(0, 8))
         
         # Top section: File selection and parameters
-        top_frame = tk.Frame(container, background=self.bg_color)
+        top_frame = tk.Frame(container, background='#F5F5F5')
         top_frame.pack(fill=tk.X, pady=(0, 5))
         
         # File selection (left)
@@ -240,6 +247,12 @@ class OfflineCorrelationTab:
         btn_frame = tk.Frame(parent, background=self.bg_color)
         btn_frame.pack(pady=5)
         
+        self.validate_button = tk.Button(btn_frame, text="🔍 Validate Files",
+                                         command=self._validate_files,
+                                         background='#2196F3', foreground='white',
+                                         font=('Arial', 10, 'bold'), width=15)
+        self.validate_button.pack(side=tk.LEFT, padx=5)
+        
         self.analyze_button = tk.Button(btn_frame, text="🔬 Analyze Correlations",
                                         command=self._start_analysis,
                                         background='#FF9800', foreground='white',
@@ -324,12 +337,13 @@ class OfflineCorrelationTab:
             self.channel_labels.append(lbl)
         
         # Right: Plots
-        plot_frame = tk.Frame(results_frame, background=self.bg_color)
+        plot_frame = tk.Frame(results_frame, background='#F5F5F5')
         plot_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         
         # Create figure with 2 subplots
-        self.fig, (self.ax1, self.ax2) = plt.subplots(1, 2, figsize=(10, 4))
-        self.fig.patch.set_facecolor(self.bg_color)
+        self.fig, (self.ax1, self.ax2) = plt.subplots(1, 2, figsize=(10, 4), facecolor='#F5F5F5')
+        self.ax1.set_facecolor('#FFFFFF')
+        self.ax2.set_facecolor('#FFFFFF')
         
         self.ax1.set_title('Coincidence Time Series', fontsize=10, fontweight='bold')
         self.ax1.set_xlabel('Time (s)')
@@ -344,6 +358,7 @@ class OfflineCorrelationTab:
         self.fig.tight_layout()
         
         self.canvas = FigureCanvasTkAgg(self.fig, master=plot_frame)
+        self.canvas.get_tk_widget().configure(background='#F5F5F5')
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
         self.canvas.draw()
     
@@ -387,6 +402,118 @@ class OfflineCorrelationTab:
                 pair['local_label'].config(text="(not selected)", foreground='#999')
             if pair['remote_label']:
                 pair['remote_label'].config(text="(not selected)", foreground='#999')
+    
+    def _validate_files(self):
+        """Validate selected files for corruption and compatibility."""
+        if TimestampFileValidator is None:
+            messagebox.showwarning("Validation Unavailable",
+                                  "File validator module not available.\n"
+                                  "Check that utils/file_validator.py exists.")
+            return
+        
+        # Collect enabled channels with files
+        files_to_validate = []
+        for ch_idx, pair in enumerate(self.channel_pairs):
+            if pair['enabled'].get():
+                if pair['local_file']:
+                    files_to_validate.append(('Local', ch_idx+1, pair['local_file']))
+                if pair['remote_file']:
+                    files_to_validate.append(('Remote', ch_idx+1, pair['remote_file']))
+        
+        if not files_to_validate:
+            messagebox.showwarning("No Files", "Please select files to validate.")
+            return
+        
+        # Create validation report window
+        report_window = tk.Toplevel(self.root)
+        report_window.title("File Validation Report")
+        report_window.geometry("800x600")
+        
+        # Add scrolled text widget
+        text_widget = scrolledtext.ScrolledText(report_window, wrap=tk.WORD,
+                                                font=('Courier New', 9))
+        text_widget.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        def run_validation():
+            text_widget.insert(tk.END, "="*80 + "\n")
+            text_widget.insert(tk.END, "FILE VALIDATION REPORT\n")
+            text_widget.insert(tk.END, "="*80 + "\n\n")
+            text_widget.update()
+            
+            all_valid = True
+            validations = {}
+            
+            for side, ch, filepath in files_to_validate:
+                text_widget.insert(tk.END, f"\n{'='*80}\n")
+                text_widget.insert(tk.END, f"Validating {side} Ch{ch}: {filepath.name}\n")
+                text_widget.insert(tk.END, f"{'='*80}\n\n")
+                text_widget.update()
+                
+                try:
+                    validation = TimestampFileValidator.validate_file(filepath, max_samples=5000)
+                    validations[(side, ch)] = validation
+                    
+                    if validation['valid']:
+                        text_widget.insert(tk.END, "✅ File appears VALID\n\n", 'success')
+                    else:
+                        text_widget.insert(tk.END, "❌ File validation FAILED\n\n", 'error')
+                        all_valid = False
+                    
+                    # Print info
+                    text_widget.insert(tk.END, "📊 File Info:\n")
+                    for key, value in validation['info'].items():
+                        if isinstance(value, float):
+                            if 'sec' in key.lower() and value > 1:
+                                text_widget.insert(tk.END, f"  {key}: {value:.2f}\n")
+                            elif 'hz' in key.lower():
+                                text_widget.insert(tk.END, f"  {key}: {value:.1f}\n")
+                            else:
+                                text_widget.insert(tk.END, f"  {key}: {value:,.0f}\n")
+                        elif isinstance(value, int):
+                            text_widget.insert(tk.END, f"  {key}: {value:,}\n")
+                        else:
+                            text_widget.insert(tk.END, f"  {key}: {value}\n")
+                    
+                    # Print errors
+                    if validation['errors']:
+                        text_widget.insert(tk.END, f"\n❌ Errors ({len(validation['errors'])}):\n", 'error')
+                        for err in validation['errors']:
+                            text_widget.insert(tk.END, f"  • {err}\n")
+                    
+                    # Print warnings
+                    if validation['warnings']:
+                        text_widget.insert(tk.END, f"\n⚠️  Warnings ({len(validation['warnings'])}):\n", 'warning')
+                        for warn in validation['warnings']:
+                            text_widget.insert(tk.END, f"  • {warn}\n")
+                    
+                    text_widget.insert(tk.END, "\n")
+                    text_widget.update()
+                    
+                except Exception as e:
+                    text_widget.insert(tk.END, f"❌ Validation error: {str(e)}\n\n", 'error')
+                    all_valid = False
+            
+            # Summary
+            text_widget.insert(tk.END, f"\n{'='*80}\n")
+            text_widget.insert(tk.END, "SUMMARY\n")
+            text_widget.insert(tk.END, f"{'='*80}\n\n")
+            
+            if all_valid:
+                text_widget.insert(tk.END, "✅ All files passed validation!\n", 'success')
+            else:
+                text_widget.insert(tk.END, "❌ Some files FAILED validation.\n"
+                                         "   Files may be corrupted or in wrong format.\n", 'error')
+            
+            text_widget.insert(tk.END, f"\nValidated {len(files_to_validate)} files.\n")
+            
+            # Configure tags
+            text_widget.tag_config('success', foreground='green', font=('Courier New', 9, 'bold'))
+            text_widget.tag_config('error', foreground='red', font=('Courier New', 9, 'bold'))
+            text_widget.tag_config('warning', foreground='orange', font=('Courier New', 9, 'bold'))
+        
+        # Run validation in thread
+        thread = threading.Thread(target=run_validation, daemon=True)
+        thread.start()
     
     def _auto_detect_files(self):
         """Auto-detect timestamp files in data directory."""
@@ -491,6 +618,16 @@ class OfflineCorrelationTab:
         """
         Count coincidences and build time difference histogram.
         
+        SIGN CONVENTION:
+            offset_ps > 0 means remote is AHEAD of local
+            offset_ps < 0 means remote is BEHIND local
+            
+            To align: remote_adjusted = remote - offset_ps
+            
+            Example: offset = +5000 ps (remote 5ns ahead)
+                     remote_adjusted = remote - 5000
+                     This shifts remote backwards to match local
+        
         Uses vectorized binary search for efficient O(n log m) performance.
         
         Returns:
@@ -499,9 +636,15 @@ class OfflineCorrelationTab:
         if len(local_ts) == 0 or len(remote_ts) == 0:
             return 0, np.array([])
         
-        # Apply time offset - SUBTRACT to align remote with local
-        # Positive offset means remote is AHEAD, so we subtract to bring it back
+        # Apply time offset: remote_adjusted = remote - offset
+        # This aligns remote timestamps with local timestamps
         remote_adjusted = remote_ts.astype(np.int64) - time_offset_ps
+        
+        if DEBUG_MODE:
+            logger.info(f"[DEBUG] Offset application: remote_adjusted = remote - ({time_offset_ps:,} ps)")
+            logger.info(f"[DEBUG] Local range: [{local_ts[0]:,}, {local_ts[-1]:,}] ps")
+            logger.info(f"[DEBUG] Remote range (raw): [{remote_ts[0]:,}, {remote_ts[-1]:,}] ps")
+            logger.info(f"[DEBUG] Remote range (adjusted): [{remote_adjusted[0]:,}, {remote_adjusted[-1]:,}] ps")
         
         logger.info(f"Counting coincidences: {len(local_ts):,} local × {len(remote_ts):,} remote, "
                    f"offset={time_offset_ps:,} ps, window=±{window_ps} ps")
@@ -675,11 +818,16 @@ class OfflineCorrelationTab:
     def _build_time_series(self, local_ts: np.ndarray, remote_ts: np.ndarray,
                            time_offset_ps: int, window_ps: int, 
                            time_bin_sec: float, ref_time: int) -> Tuple[np.ndarray, np.ndarray]:
-        """Build coincidence time series using vectorized operations."""
+        """
+        Build coincidence time series using vectorized operations.
+        
+        Same sign convention as _count_coincidences_with_histogram:
+            remote_adjusted = remote - offset_ps
+        """
         if len(local_ts) == 0 or len(remote_ts) == 0:
             return np.array([]), np.array([])
         
-        # Apply offset - SUBTRACT to align remote with local
+        # Apply offset: remote_adjusted = remote - offset
         remote_adjusted = remote_ts.astype(np.int64) - time_offset_ps
         
         # Convert to seconds relative to reference

@@ -1,6 +1,7 @@
 #include <iostream>
 #include <fstream>
 #include <vector>
+#include "fs_util.h"
 #include "Correlator.h"
 #include <filesystem>
 

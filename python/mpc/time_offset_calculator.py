@@ -1,13 +1,26 @@
 """
 Time Offset Calculator - FFT Cross-Correlation Algorithm
 
-Replicates the C++ Correlator::CalculateDeltaT() function to automatically
-calculate time offset between two sites' timestamp streams.
+Calculates the time offset between LOCAL and REMOTE timestamp streams using
+FFT-based cross-correlation.
 
-This implementation matches the C++ version exactly:
-- Streaming file reads (low memory usage)
-- Full complex FFT (matching FFTW behavior)
-- Same binning formula: (ps_in_second + Tshift + ref_second * 1e12) / tau % N
+SIGN CONVENTION (important!):
+- We compute: cross_correlation = IFFT( conj(FFT(local)) * FFT(remote) )
+- Peak at lag τ means: remote(t - τ) aligns with local(t)
+- Equivalently: remote is AHEAD of local by τ
+- To align timestamps: remote_adjusted = remote - offset
+
+WRAPAROUND HANDLING:
+- FFT correlation is circular with period N * tau
+- Peak at index k can mean offset = +k*tau OR offset = (k-N)*tau
+- We check both halves and pick the one with smaller absolute offset
+- This allows detecting both positive and negative offsets
+
+USAGE:
+    calculator = TimeOffsetCalculator(tau=2048, N=2**23)
+    result = calculator.run_correlation([local.bin], [remote.bin])
+    offset_ps = result['offset_ps']  # Positive = remote ahead, Negative = remote behind
+    # To align: remote_adjusted = remote_timestamp - offset_ps
 """
 
 import numpy as np
@@ -16,6 +29,12 @@ from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, List
 import gc
 
+# Import debug flag
+try:
+    from gui_components.config import DEBUG_MODE
+except ImportError:
+    DEBUG_MODE = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -23,7 +42,6 @@ class TimeOffsetCalculator:
     """
     FFT-based cross-correlation calculator for timestamp synchronization.
     
-    Matches C++ Correlator implementation exactly:
     - Streaming file reads to minimize memory usage
     - Full complex DFT (not real FFT) to match FFTW behavior
     - Same binning and correlation formula
@@ -37,7 +55,6 @@ class TimeOffsetCalculator:
             tau: Bin width in picoseconds (default: 2048 ps = 2.048 ns)
             N: Number of FFT bins (default: 2^23 = 8,388,608)
             Tshift: Initial time shift in picoseconds (default: 0)
-                   C++ tmp.cpp also uses Tshift = 0
         """
         self.tau = tau
         self.N = N
@@ -50,7 +67,6 @@ class TimeOffsetCalculator:
         """
         Read binary file and create histogram buffer using streaming (low memory).
         
-        Matches C++ read_data() function exactly:
         - Reads in chunks (doesn't load whole file into memory)
         - Directly bins into histogram: totalTime = (ps + Tshift) + (second * 1e12)
         - bin_index = (totalTime / tau) % N
@@ -72,9 +88,19 @@ class TimeOffsetCalculator:
         num_values = file_size // 8  # uint64 = 8 bytes
         num_pairs = num_values // 2
         
+        if DEBUG_MODE:
+            logger.info(f"[DEBUG] File: {filepath.name}")
+            logger.info(f"[DEBUG] Size: {file_size:,} bytes ({file_size / 1024**2:.2f} MB)")
+            logger.info(f"[DEBUG] Expected pairs: {num_pairs:,}")
+            logger.info(f"[DEBUG] tau={self.tau} ps, N={self.N}, Tshift={self.Tshift} ps")
+            
+            # Check if size is valid
+            if file_size % 16 != 0:
+                logger.warning(f"[DEBUG] WARNING: File size not multiple of 16! Remainder: {file_size % 16} bytes")
+        
         logger.info(f"Reading {num_pairs:,} timestamp pairs ({file_size / 1024**2:.1f} MB)")
         
-        # Initialize histogram buffer (matches C++ buff[k][0] = 0.0)
+        # Initialize histogram buffer
         buffer = np.zeros(self.N, dtype=np.float64)
         
         # Track statistics
@@ -82,7 +108,7 @@ class TimeOffsetCalculator:
         first_timestamp = None
         last_timestamp = None
         
-        # Read in chunks like C++ does
+        # Read in chunks
         chunk_size = self.chunk_size * 2  # Each pair is 2 uint64 values
         
         with open(filepath, 'rb') as f:
@@ -105,18 +131,23 @@ class TimeOffsetCalculator:
                     raw_values = raw_values[:num_read]
                 
                 # Process pairs: [ps_in_second, ref_second, ps_in_second, ref_second, ...]
-                # Match C++ exactly: for (size_t k = 0; k + 1 < numRead; k += 2)
                 ps_values = raw_values[0::2]  # Even indices: picoseconds within second
                 sec_values = raw_values[1::2]  # Odd indices: second counter
                 
-                # Match C++ formula exactly:
-                # uint64_t totalTime = (tmpBuff[k] + Tshift) + (tmpBuff[k + 1] * 1e12);
-                # size_t r = (size_t)(totalTime / tau) % N;
+                # Calculate total time and bin indices
                 total_times = (ps_values.astype(np.uint64) + np.uint64(self.Tshift)) + \
                              (sec_values.astype(np.uint64) * np.uint64(int(1e12)))
                 bin_indices = (total_times // np.uint64(self.tau)) % np.uint64(self.N)
                 
-                # Count into histogram (matches C++ buff[r][0] += 1.0)
+                # Debug first chunk
+                if DEBUG_MODE and first_timestamp is None:
+                    logger.info(f"[DEBUG] First 5 ps_values: {ps_values[:5].tolist()}")
+                    logger.info(f"[DEBUG] First 5 sec_values: {sec_values[:5].tolist()}")
+                    logger.info(f"[DEBUG] First 5 total_times: {total_times[:5].tolist()}")
+                    logger.info(f"[DEBUG] First 5 bin_indices: {bin_indices[:5].tolist()}")
+                    logger.info(f"[DEBUG] Bin index range: [{np.min(bin_indices)}, {np.max(bin_indices)}]")
+                
+                # Count into histogram
                 np.add.at(buffer, bin_indices.astype(np.int64), 1.0)
                 
                 total_events += len(ps_values)
@@ -217,82 +248,127 @@ class TimeOffsetCalculator:
         """
         Compute FFT cross-correlation between two histogram buffers.
         
-        Matches C++ CalculateDeltaT() function EXACTLY:
-        1. Forward FFT on both buffers (full complex FFT)
-        2. Cross-multiply: cbuff_c[k] = buff1_c[k] * conj(buff2_c[k])
-           C++ formula: real = real1*real2 + imag1*imag2
-                        imag = -imag1*real2 + real1*imag2
-           This is buff1 * conj(buff2) in complex notation
-        3. Inverse FFT to get correlation function
-        4. Divide by N (after inverse)
-        5. Normalize by (value - mean) / std_dev
-        6. Find peak
+        Mathematical definition:
+            (f ★ g)(τ) = ∫ f(t) · g(t + τ) dt
+        
+        FFT implementation:
+            cross_corr = IFFT( conj(FFT(f)) · FFT(g) )
+        
+        Here buff1 = local, buff2 = remote, so we compute:
+            cross_corr = IFFT( conj(FFT(local)) · FFT(remote) )
+        
+        Interpretation:
+            Peak at index k means remote(t - k·τ) aligns with local(t)
+            i.e., remote is AHEAD by k·τ picoseconds
+        
+        Wraparound:
+            Due to circular FFT, index k is equivalent to index k - N
+            So peak at k could mean offset = +k·τ OR offset = (k-N)·τ
+            We handle this in the calling code.
         
         Args:
-            buff1: First histogram buffer (float64 array of counts)
-            buff2: Second histogram buffer (float64 array of counts)
+            buff1: LOCAL histogram buffer (float64 array of counts)
+            buff2: REMOTE histogram buffer (float64 array of counts)
         
         Returns:
             Tuple of (correlation_function, peak_value_sigma, peak_index)
         """
         logger.info("Computing FFT cross-correlation (matching C++ exactly)...")
         
+        if DEBUG_MODE:
+            logger.info(f"[DEBUG] Buffer shapes: buff1={buff1.shape}, buff2={buff2.shape}")
+            logger.info(f"[DEBUG] buff1 stats: min={np.min(buff1):.1f}, max={np.max(buff1):.1f}, "
+                        f"mean={np.mean(buff1):.3f}, sum={np.sum(buff1):.0f}")
+            logger.info(f"[DEBUG] buff2 stats: min={np.min(buff2):.1f}, max={np.max(buff2):.1f}, "
+                        f"mean={np.mean(buff2):.3f}, sum={np.sum(buff2):.0f}")
+            logger.info(f"[DEBUG] buff1 non-zero bins: {np.count_nonzero(buff1)} / {len(buff1)}")
+            logger.info(f"[DEBUG] buff2 non-zero bins: {np.count_nonzero(buff2)} / {len(buff2)}")
+        
         # Step 1: Forward FFT on both buffers
-        # C++ uses fftw_plan_dft_1d with FFTW_FORWARD (full complex FFT)
-        # For real input, np.fft.fft returns the same as FFTW on complex input with imag=0
-        logger.debug("Forward FFT...")
-        fft1 = np.fft.fft(buff1)  # Full complex FFT (matches FFTW on real data)
-        fft2 = np.fft.fft(buff2)
+        # fft1 = FFT(local), fft2 = FFT(remote)
+        fft1 = np.fft.fft(buff1)  # LOCAL
+        fft2 = np.fft.fft(buff2)  # REMOTE
+        
+        if DEBUG_MODE:
+            logger.info(f"[DEBUG] FFT(local) stats: max_mag={np.max(np.abs(fft1)):.2e}")
+            logger.info(f"[DEBUG] FFT(remote) stats: max_mag={np.max(np.abs(fft2)):.2e}")
         
         # Step 2: Cross-correlation in frequency domain
-        # C++ code:
-        #   cbuff_c[k][0] = real1 * real2 + imag1 * imag2;  // real part
-        #   cbuff_c[k][1] = -imag1 * real2 + real1 * imag2; // imag part
-        # Let's verify: for z1 = r1 + i1*j, z2 = r2 + i2*j
-        #   conj(z1) * z2 = (r1 - i1*j)(r2 + i2*j) = (r1*r2 + i1*i2) + (r1*i2 - i1*r2)*j
-        # So C++ computes: conj(buff1_c) * buff2_c
-        logger.debug("Computing cross-correlation...")
-        cbuff_c = np.conj(fft1) * fft2  # conj(buff1) * buff2 to match C++
+        # Formula: cross_corr = IFFT( conj(FFT(local)) * FFT(remote) )
+        # Peak at index k means: remote is AHEAD of local by k * tau
+        cbuff_c = np.conj(fft1) * fft2
+        
+        if DEBUG_MODE:
+            logger.info(f"[DEBUG] Cross-correlation spectrum: max_mag={np.max(np.abs(cbuff_c)):.2e}")
         
         # Free FFT buffers
         del fft1, fft2
         gc.collect()
         
         # Step 3: Inverse FFT
-        # C++ uses FFTW_BACKWARD (inverse DFT)
-        # IMPORTANT: FFTW backward transform does NOT divide by N
-        # np.fft.ifft DOES divide by N automatically
-        # So we need to multiply by N to match C++ behavior
-        logger.debug("Inverse FFT...")
         cbuff = np.fft.ifft(cbuff_c) * self.N  # Multiply by N to match FFTW behavior
         del cbuff_c
         gc.collect()
         
         # Step 4: Divide by N and take real part
-        # C++ code: cbuff[n][0] /= N; cbuffr[n] = cbuff[n][0];
         cbuffr = (cbuff.real / self.N).copy()
         del cbuff
         gc.collect()
         
+        if DEBUG_MODE:
+            logger.info(f"[DEBUG] cbuffr stats: min={np.min(cbuffr):.3e}, max={np.max(cbuffr):.3e}, "
+                        f"mean={np.mean(cbuffr):.3e}")
+        
         # Step 5: Calculate mean and variance (standard deviation)
-        # C++ code: cmean = vec_mean(cbuffr, N); cvar = vec_variance(cbuffr, cmean, N);
-        # C++ variance uses (n-1) denominator: sqrt(sum((x-mean)^2) / (n-1))
         cmean = np.mean(cbuffr)
-        cvar = np.std(cbuffr, ddof=1)  # ddof=1 matches C++ (n-1) denominator
+        cvar = np.std(cbuffr, ddof=1)
         
         logger.info(f"Correlation stats: MEAN={cmean:.10e}, VAR(std)={cvar:.10e}")
         
-        # Step 6: Normalize: S[n] = (cbuffr[n] - cmean) / cvar
+        # Step 6: Normalize
         S = (cbuffr - cmean) / cvar
         del cbuffr
         gc.collect()
+        
+        if DEBUG_MODE:
+            logger.info(f"[DEBUG] Normalized S: min={np.min(S):.2f}σ, max={np.max(S):.2f}σ")
+            # Find top 5 peaks, showing both positive and negative interpretations
+            top_indices = np.argsort(S)[-5:][::-1]
+            logger.info(f"[DEBUG] Top 5 peaks (showing wraparound interpretations):")
+            for i, idx in enumerate(top_indices):
+                # Positive interpretation: offset = idx * tau
+                offset_pos_us = (self.tau * idx) / 1e6
+                # Negative interpretation: offset = (idx - N) * tau  
+                offset_neg_us = (self.tau * (idx - self.N)) / 1e6
+                logger.info(f"[DEBUG]   #{i+1}: index={idx}, value={S[idx]:.2f}σ, "  
+                           f"offset={offset_pos_us:+.3f} µs OR {offset_neg_us:+.3f} µs")
         
         # Step 7: Find maximum
         peak_index = int(np.argmax(S))
         peak_value = float(S[peak_index])
         
-        logger.info(f"Peak found at index {peak_index}, value={peak_value:.2f}σ")
+        # Handle wraparound: choose interpretation with smaller absolute offset
+        # Peak at index k can mean:
+        #   - Positive offset: k * tau (remote ahead)
+        #   - Negative offset: (k - N) * tau (remote behind)
+        # We pick the one with smaller absolute value
+        offset_positive = self.tau * peak_index
+        offset_negative = self.tau * (peak_index - self.N)
         
+        if abs(offset_negative) < abs(offset_positive):
+            # Negative offset is more reasonable (peak is in upper half)
+            adjusted_offset = offset_negative
+            logger.info(f"Peak at index {peak_index} (upper half of N={self.N})")
+            logger.info(f"  Interpreted as NEGATIVE offset: remote is BEHIND by {-adjusted_offset/1e6:.3f} µs")
+        else:
+            # Positive offset is more reasonable (peak is in lower half)
+            adjusted_offset = offset_positive
+            logger.info(f"Peak at index {peak_index} (lower half of N={self.N})")
+            logger.info(f"  Interpreted as POSITIVE offset: remote is AHEAD by {adjusted_offset/1e6:.3f} µs")
+        
+        logger.info(f"Peak value: {peak_value:.2f}σ")
+        
+        # Return the raw peak_index, offset adjustment happens in run_correlation
         return S, peak_value, peak_index
     
     def assess_confidence(self, peak_value: float, correlation_func: np.ndarray, 
@@ -391,9 +467,17 @@ class TimeOffsetCalculator:
             del buff1, buff2
             gc.collect()
             
-            # Step 3: Calculate offset
-            # C++ code: return this->tau * (uint64_t)smax.kmax;
-            offset_ps = self.tau * peak_index
+            # Step 3: Calculate offset with wraparound handling
+            # Peak at index k can mean offset = k*tau OR offset = (k-N)*tau
+            # Choose the interpretation with smaller absolute value
+            offset_positive = self.tau * peak_index
+            offset_negative = self.tau * (peak_index - self.N)
+            
+            if abs(offset_negative) < abs(offset_positive):
+                offset_ps = offset_negative  # Remote is BEHIND (negative offset)
+            else:
+                offset_ps = offset_positive  # Remote is AHEAD (positive offset)
+            
             offset_ms = offset_ps / 1e9  # Convert to milliseconds
             
             # Step 4: Assess confidence
@@ -402,6 +486,12 @@ class TimeOffsetCalculator:
             logger.info("="*60)
             logger.info("RESULTS:")
             logger.info(f"Time Offset: {offset_ps:,} ps ({offset_ms:.6f} ms)")
+            if offset_ps >= 0:
+                logger.info(f"  → Remote is AHEAD of local by {offset_ps/1e6:.3f} µs")
+                logger.info(f"  → To align: remote_adjusted = remote - {offset_ps:,} ps")
+            else:
+                logger.info(f"  → Remote is BEHIND local by {-offset_ps/1e6:.3f} µs")
+                logger.info(f"  → To align: remote_adjusted = remote - ({offset_ps:,}) ps = remote + {-offset_ps:,} ps")
             logger.info(f"Peak Index (kmax): {peak_index}")
             logger.info(f"Peak Strength: {peak_value:.2f}σ")
             logger.info(f"Confidence: {assessment['confidence']}")
