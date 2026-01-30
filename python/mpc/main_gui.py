@@ -1284,11 +1284,23 @@ class App:
 
 def main():
     """Main entry point for the application."""
-    # Configure logging
+    # Configure logging with DEBUG level when DEBUG_MODE is enabled
+    from gui_components.config import DEBUG_MODE
+    log_level = logging.DEBUG if DEBUG_MODE else logging.INFO
+    
     logging.basicConfig(
-        level=logging.INFO,
+        level=log_level,
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
+    
+    # Silence excessive matplotlib font debugging
+    logging.getLogger('matplotlib.font_manager').setLevel(logging.WARNING)
+    logging.getLogger('matplotlib').setLevel(logging.WARNING)
+    
+    if DEBUG_MODE:
+        logger.warning("="*80)
+        logger.warning("DEBUG MODE ENABLED - Extensive logging active")
+        logger.warning("="*80)
     
     logger.info("Starting MPC320 Peer-to-Peer Control Application")
     

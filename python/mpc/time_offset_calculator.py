@@ -15,6 +15,12 @@ from pathlib import Path
 from typing import Optional, Tuple, Dict, Any, List
 import gc
 
+# Import debug flag
+try:
+    from gui_components.config import DEBUG_MODE
+except ImportError:
+    DEBUG_MODE = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -68,6 +74,16 @@ class TimeOffsetCalculator:
         num_values = file_size // 8  # uint64 = 8 bytes
         num_pairs = num_values // 2
         
+        if DEBUG_MODE:
+            logger.info(f"[DEBUG] File: {filepath.name}")
+            logger.info(f"[DEBUG] Size: {file_size:,} bytes ({file_size / 1024**2:.2f} MB)")
+            logger.info(f"[DEBUG] Expected pairs: {num_pairs:,}")
+            logger.info(f"[DEBUG] tau={self.tau} ps, N={self.N}, Tshift={self.Tshift} ps")
+            
+            # Check if size is valid
+            if file_size % 16 != 0:
+                logger.warning(f"[DEBUG] WARNING: File size not multiple of 16! Remainder: {file_size % 16} bytes")
+        
         logger.info(f"Reading {num_pairs:,} timestamp pairs ({file_size / 1024**2:.1f} MB)")
         
         # Initialize histogram buffer
@@ -108,9 +124,14 @@ class TimeOffsetCalculator:
                 total_times = (ps_values.astype(np.uint64) + np.uint64(self.Tshift)) + \
                              (sec_values.astype(np.uint64) * np.uint64(int(1e12)))
                 bin_indices = (total_times // np.uint64(self.tau)) % np.uint64(self.N)
-                total_times = (ps_values.astype(np.uint64) + np.uint64(self.Tshift)) + \
-                             (sec_values.astype(np.uint64) * np.uint64(int(1e12)))
-                bin_indices = (total_times // np.uint64(self.tau)) % np.uint64(self.N)
+                
+                # Debug first chunk
+                if DEBUG_MODE and first_timestamp is None:
+                    logger.info(f"[DEBUG] First 5 ps_values: {ps_values[:5].tolist()}")
+                    logger.info(f"[DEBUG] First 5 sec_values: {sec_values[:5].tolist()}")
+                    logger.info(f"[DEBUG] First 5 total_times: {total_times[:5].tolist()}")
+                    logger.info(f"[DEBUG] First 5 bin_indices: {bin_indices[:5].tolist()}")
+                    logger.info(f"[DEBUG] Bin index range: [{np.min(bin_indices)}, {np.max(bin_indices)}]")
                 
                 # Count into histogram
                 np.add.at(buffer, bin_indices.astype(np.int64), 1.0)
@@ -230,21 +251,34 @@ class TimeOffsetCalculator:
         """
         logger.info("Computing FFT cross-correlation (matching C++ exactly)...")
         
+        if DEBUG_MODE:
+            logger.info(f"[DEBUG] Buffer shapes: buff1={buff1.shape}, buff2={buff2.shape}")
+            logger.info(f"[DEBUG] buff1 stats: min={np.min(buff1):.1f}, max={np.max(buff1):.1f}, "
+                        f"mean={np.mean(buff1):.3f}, sum={np.sum(buff1):.0f}")
+            logger.info(f"[DEBUG] buff2 stats: min={np.min(buff2):.1f}, max={np.max(buff2):.1f}, "
+                        f"mean={np.mean(buff2):.3f}, sum={np.sum(buff2):.0f}")
+            logger.info(f"[DEBUG] buff1 non-zero bins: {np.count_nonzero(buff1)} / {len(buff1)}")
+            logger.info(f"[DEBUG] buff2 non-zero bins: {np.count_nonzero(buff2)} / {len(buff2)}")
+        
         # Step 1: Forward FFT on both buffers
-        logger.debug("Forward FFT...")
         fft1 = np.fft.fft(buff1)  # Full complex FFT (matches FFTW on real data)
         fft2 = np.fft.fft(buff2)
         
+        if DEBUG_MODE:
+            logger.info(f"[DEBUG] FFT1 stats: max_mag={np.max(np.abs(fft1)):.2e}")
+            logger.info(f"[DEBUG] FFT2 stats: max_mag={np.max(np.abs(fft2)):.2e}")
+        
         # Step 2: Cross-correlation in frequency domain
-        logger.debug("Computing cross-correlation...")
         cbuff_c = np.conj(fft1) * fft2
+        
+        if DEBUG_MODE:
+            logger.info(f"[DEBUG] Cross-correlation spectrum: max_mag={np.max(np.abs(cbuff_c)):.2e}")
         
         # Free FFT buffers
         del fft1, fft2
         gc.collect()
         
         # Step 3: Inverse FFT
-        logger.debug("Inverse FFT...")
         cbuff = np.fft.ifft(cbuff_c) * self.N  # Multiply by N to match FFTW behavior
         del cbuff_c
         gc.collect()
@@ -253,6 +287,10 @@ class TimeOffsetCalculator:
         cbuffr = (cbuff.real / self.N).copy()
         del cbuff
         gc.collect()
+        
+        if DEBUG_MODE:
+            logger.info(f"[DEBUG] cbuffr stats: min={np.min(cbuffr):.3e}, max={np.max(cbuffr):.3e}, "
+                        f"mean={np.mean(cbuffr):.3e}")
         
         # Step 5: Calculate mean and variance (standard deviation)
         cmean = np.mean(cbuffr)
@@ -264,6 +302,15 @@ class TimeOffsetCalculator:
         S = (cbuffr - cmean) / cvar
         del cbuffr
         gc.collect()
+        
+        if DEBUG_MODE:
+            logger.info(f"[DEBUG] Normalized S: min={np.min(S):.2f}σ, max={np.max(S):.2f}σ")
+            # Find top 5 peaks
+            top_indices = np.argsort(S)[-5:][::-1]
+            logger.info(f"[DEBUG] Top 5 peaks:")
+            for i, idx in enumerate(top_indices):
+                delta_t_us = (self.tau * idx) / 1e6
+                logger.info(f"[DEBUG]   #{i+1}: index={idx}, value={S[idx]:.2f}σ, ΔT={delta_t_us:.3f} µs")
         
         # Step 7: Find maximum
         peak_index = int(np.argmax(S))

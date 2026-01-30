@@ -6,7 +6,7 @@ using the calculated time offset. Similar to live correlation but for offline an
 """
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox, scrolledtext
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import numpy as np
@@ -18,9 +18,16 @@ import time
 
 from streaming.timestamp_stream import CoincidenceCounter
 from gui_components.helpers import format_number
-from gui_components.config import COINCIDENCE_WINDOW_PS
+from gui_components.config import COINCIDENCE_WINDOW_PS, DEBUG_MODE
 
 logger = logging.getLogger(__name__)
+
+# Import file validator
+try:
+    from diagnostic_utils.file_validator import TimestampFileValidator
+except ImportError:
+    TimestampFileValidator = None
+    logging.warning("File validator not available")
 
 
 class OfflineCorrelationTab:
@@ -240,6 +247,12 @@ class OfflineCorrelationTab:
         btn_frame = tk.Frame(parent, background=self.bg_color)
         btn_frame.pack(pady=5)
         
+        self.validate_button = tk.Button(btn_frame, text="🔍 Validate Files",
+                                         command=self._validate_files,
+                                         background='#2196F3', foreground='white',
+                                         font=('Arial', 10, 'bold'), width=15)
+        self.validate_button.pack(side=tk.LEFT, padx=5)
+        
         self.analyze_button = tk.Button(btn_frame, text="🔬 Analyze Correlations",
                                         command=self._start_analysis,
                                         background='#FF9800', foreground='white',
@@ -389,6 +402,118 @@ class OfflineCorrelationTab:
                 pair['local_label'].config(text="(not selected)", foreground='#999')
             if pair['remote_label']:
                 pair['remote_label'].config(text="(not selected)", foreground='#999')
+    
+    def _validate_files(self):
+        """Validate selected files for corruption and compatibility."""
+        if TimestampFileValidator is None:
+            messagebox.showwarning("Validation Unavailable",
+                                  "File validator module not available.\n"
+                                  "Check that utils/file_validator.py exists.")
+            return
+        
+        # Collect enabled channels with files
+        files_to_validate = []
+        for ch_idx, pair in enumerate(self.channel_pairs):
+            if pair['enabled'].get():
+                if pair['local_file']:
+                    files_to_validate.append(('Local', ch_idx+1, pair['local_file']))
+                if pair['remote_file']:
+                    files_to_validate.append(('Remote', ch_idx+1, pair['remote_file']))
+        
+        if not files_to_validate:
+            messagebox.showwarning("No Files", "Please select files to validate.")
+            return
+        
+        # Create validation report window
+        report_window = tk.Toplevel(self.root)
+        report_window.title("File Validation Report")
+        report_window.geometry("800x600")
+        
+        # Add scrolled text widget
+        text_widget = scrolledtext.ScrolledText(report_window, wrap=tk.WORD,
+                                                font=('Courier New', 9))
+        text_widget.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        def run_validation():
+            text_widget.insert(tk.END, "="*80 + "\n")
+            text_widget.insert(tk.END, "FILE VALIDATION REPORT\n")
+            text_widget.insert(tk.END, "="*80 + "\n\n")
+            text_widget.update()
+            
+            all_valid = True
+            validations = {}
+            
+            for side, ch, filepath in files_to_validate:
+                text_widget.insert(tk.END, f"\n{'='*80}\n")
+                text_widget.insert(tk.END, f"Validating {side} Ch{ch}: {filepath.name}\n")
+                text_widget.insert(tk.END, f"{'='*80}\n\n")
+                text_widget.update()
+                
+                try:
+                    validation = TimestampFileValidator.validate_file(filepath, max_samples=5000)
+                    validations[(side, ch)] = validation
+                    
+                    if validation['valid']:
+                        text_widget.insert(tk.END, "✅ File appears VALID\n\n", 'success')
+                    else:
+                        text_widget.insert(tk.END, "❌ File validation FAILED\n\n", 'error')
+                        all_valid = False
+                    
+                    # Print info
+                    text_widget.insert(tk.END, "📊 File Info:\n")
+                    for key, value in validation['info'].items():
+                        if isinstance(value, float):
+                            if 'sec' in key.lower() and value > 1:
+                                text_widget.insert(tk.END, f"  {key}: {value:.2f}\n")
+                            elif 'hz' in key.lower():
+                                text_widget.insert(tk.END, f"  {key}: {value:.1f}\n")
+                            else:
+                                text_widget.insert(tk.END, f"  {key}: {value:,.0f}\n")
+                        elif isinstance(value, int):
+                            text_widget.insert(tk.END, f"  {key}: {value:,}\n")
+                        else:
+                            text_widget.insert(tk.END, f"  {key}: {value}\n")
+                    
+                    # Print errors
+                    if validation['errors']:
+                        text_widget.insert(tk.END, f"\n❌ Errors ({len(validation['errors'])}):\n", 'error')
+                        for err in validation['errors']:
+                            text_widget.insert(tk.END, f"  • {err}\n")
+                    
+                    # Print warnings
+                    if validation['warnings']:
+                        text_widget.insert(tk.END, f"\n⚠️  Warnings ({len(validation['warnings'])}):\n", 'warning')
+                        for warn in validation['warnings']:
+                            text_widget.insert(tk.END, f"  • {warn}\n")
+                    
+                    text_widget.insert(tk.END, "\n")
+                    text_widget.update()
+                    
+                except Exception as e:
+                    text_widget.insert(tk.END, f"❌ Validation error: {str(e)}\n\n", 'error')
+                    all_valid = False
+            
+            # Summary
+            text_widget.insert(tk.END, f"\n{'='*80}\n")
+            text_widget.insert(tk.END, "SUMMARY\n")
+            text_widget.insert(tk.END, f"{'='*80}\n\n")
+            
+            if all_valid:
+                text_widget.insert(tk.END, "✅ All files passed validation!\n", 'success')
+            else:
+                text_widget.insert(tk.END, "❌ Some files FAILED validation.\n"
+                                         "   Files may be corrupted or in wrong format.\n", 'error')
+            
+            text_widget.insert(tk.END, f"\nValidated {len(files_to_validate)} files.\n")
+            
+            # Configure tags
+            text_widget.tag_config('success', foreground='green', font=('Courier New', 9, 'bold'))
+            text_widget.tag_config('error', foreground='red', font=('Courier New', 9, 'bold'))
+            text_widget.tag_config('warning', foreground='orange', font=('Courier New', 9, 'bold'))
+        
+        # Run validation in thread
+        thread = threading.Thread(target=run_validation, daemon=True)
+        thread.start()
     
     def _auto_detect_files(self):
         """Auto-detect timestamp files in data directory."""
