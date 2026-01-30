@@ -618,6 +618,16 @@ class OfflineCorrelationTab:
         """
         Count coincidences and build time difference histogram.
         
+        SIGN CONVENTION:
+            offset_ps > 0 means remote is AHEAD of local
+            offset_ps < 0 means remote is BEHIND local
+            
+            To align: remote_adjusted = remote - offset_ps
+            
+            Example: offset = +5000 ps (remote 5ns ahead)
+                     remote_adjusted = remote - 5000
+                     This shifts remote backwards to match local
+        
         Uses vectorized binary search for efficient O(n log m) performance.
         
         Returns:
@@ -626,9 +636,15 @@ class OfflineCorrelationTab:
         if len(local_ts) == 0 or len(remote_ts) == 0:
             return 0, np.array([])
         
-        # Apply time offset - SUBTRACT to align remote with local
-        # Positive offset means remote is AHEAD, so we subtract to bring it back
+        # Apply time offset: remote_adjusted = remote - offset
+        # This aligns remote timestamps with local timestamps
         remote_adjusted = remote_ts.astype(np.int64) - time_offset_ps
+        
+        if DEBUG_MODE:
+            logger.info(f"[DEBUG] Offset application: remote_adjusted = remote - ({time_offset_ps:,} ps)")
+            logger.info(f"[DEBUG] Local range: [{local_ts[0]:,}, {local_ts[-1]:,}] ps")
+            logger.info(f"[DEBUG] Remote range (raw): [{remote_ts[0]:,}, {remote_ts[-1]:,}] ps")
+            logger.info(f"[DEBUG] Remote range (adjusted): [{remote_adjusted[0]:,}, {remote_adjusted[-1]:,}] ps")
         
         logger.info(f"Counting coincidences: {len(local_ts):,} local × {len(remote_ts):,} remote, "
                    f"offset={time_offset_ps:,} ps, window=±{window_ps} ps")
@@ -802,11 +818,16 @@ class OfflineCorrelationTab:
     def _build_time_series(self, local_ts: np.ndarray, remote_ts: np.ndarray,
                            time_offset_ps: int, window_ps: int, 
                            time_bin_sec: float, ref_time: int) -> Tuple[np.ndarray, np.ndarray]:
-        """Build coincidence time series using vectorized operations."""
+        """
+        Build coincidence time series using vectorized operations.
+        
+        Same sign convention as _count_coincidences_with_histogram:
+            remote_adjusted = remote - offset_ps
+        """
         if len(local_ts) == 0 or len(remote_ts) == 0:
             return np.array([]), np.array([])
         
-        # Apply offset - SUBTRACT to align remote with local
+        # Apply offset: remote_adjusted = remote - offset
         remote_adjusted = remote_ts.astype(np.int64) - time_offset_ps
         
         # Convert to seconds relative to reference

@@ -172,6 +172,13 @@ class TimestampFileValidator:
             result['samples']['last_10_ps'] = all_ps[-10:].tolist()
             result['samples']['last_10_sec'] = all_sec[-10:].tolist()
             
+            # Store ref_second data for plotting
+            result['ref_second_data'] = {
+                'all_sec': all_sec,
+                'all_ps': all_ps,
+                'total_times_ps': total_times_ps
+            }
+            
         except Exception as e:
             result['valid'] = False
             result['errors'].append(f"Data validation failed: {str(e)}")

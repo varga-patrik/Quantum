@@ -1,12 +1,26 @@
 """
 Time Offset Calculator - FFT Cross-Correlation Algorithm
 
-Replicates the C++ Correlator::CalculateDeltaT() function to automatically
-calculate time offset between two sites' timestamp streams.
+Calculates the time offset between LOCAL and REMOTE timestamp streams using
+FFT-based cross-correlation.
 
-This implementation matches the C++ version exactly:
-- Streaming file reads (low memory usage)
-- Full complex FFT (matching FFTW behavior)
+SIGN CONVENTION (important!):
+- We compute: cross_correlation = IFFT( conj(FFT(local)) * FFT(remote) )
+- Peak at lag τ means: remote(t - τ) aligns with local(t)
+- Equivalently: remote is AHEAD of local by τ
+- To align timestamps: remote_adjusted = remote - offset
+
+WRAPAROUND HANDLING:
+- FFT correlation is circular with period N * tau
+- Peak at index k can mean offset = +k*tau OR offset = (k-N)*tau
+- We check both halves and pick the one with smaller absolute offset
+- This allows detecting both positive and negative offsets
+
+USAGE:
+    calculator = TimeOffsetCalculator(tau=2048, N=2**23)
+    result = calculator.run_correlation([local.bin], [remote.bin])
+    offset_ps = result['offset_ps']  # Positive = remote ahead, Negative = remote behind
+    # To align: remote_adjusted = remote_timestamp - offset_ps
 """
 
 import numpy as np
@@ -234,17 +248,27 @@ class TimeOffsetCalculator:
         """
         Compute FFT cross-correlation between two histogram buffers.
         
-        1. Forward FFT on both buffers (full complex FFT)
-        2. Cross-multiply: cbuff_c[k] = buff1_c[k] * conj(buff2_c[k])
-           This is buff1 * conj(buff2) in complex notation
-        3. Inverse FFT to get correlation function
-        4. Divide by N (after inverse)
-        5. Normalize by (value - mean) / std_dev
-        6. Find peak
+        Mathematical definition:
+            (f ★ g)(τ) = ∫ f(t) · g(t + τ) dt
+        
+        FFT implementation:
+            cross_corr = IFFT( conj(FFT(f)) · FFT(g) )
+        
+        Here buff1 = local, buff2 = remote, so we compute:
+            cross_corr = IFFT( conj(FFT(local)) · FFT(remote) )
+        
+        Interpretation:
+            Peak at index k means remote(t - k·τ) aligns with local(t)
+            i.e., remote is AHEAD by k·τ picoseconds
+        
+        Wraparound:
+            Due to circular FFT, index k is equivalent to index k - N
+            So peak at k could mean offset = +k·τ OR offset = (k-N)·τ
+            We handle this in the calling code.
         
         Args:
-            buff1: First histogram buffer (float64 array of counts)
-            buff2: Second histogram buffer (float64 array of counts)
+            buff1: LOCAL histogram buffer (float64 array of counts)
+            buff2: REMOTE histogram buffer (float64 array of counts)
         
         Returns:
             Tuple of (correlation_function, peak_value_sigma, peak_index)
@@ -261,14 +285,17 @@ class TimeOffsetCalculator:
             logger.info(f"[DEBUG] buff2 non-zero bins: {np.count_nonzero(buff2)} / {len(buff2)}")
         
         # Step 1: Forward FFT on both buffers
-        fft1 = np.fft.fft(buff1)  # Full complex FFT (matches FFTW on real data)
-        fft2 = np.fft.fft(buff2)
+        # fft1 = FFT(local), fft2 = FFT(remote)
+        fft1 = np.fft.fft(buff1)  # LOCAL
+        fft2 = np.fft.fft(buff2)  # REMOTE
         
         if DEBUG_MODE:
-            logger.info(f"[DEBUG] FFT1 stats: max_mag={np.max(np.abs(fft1)):.2e}")
-            logger.info(f"[DEBUG] FFT2 stats: max_mag={np.max(np.abs(fft2)):.2e}")
+            logger.info(f"[DEBUG] FFT(local) stats: max_mag={np.max(np.abs(fft1)):.2e}")
+            logger.info(f"[DEBUG] FFT(remote) stats: max_mag={np.max(np.abs(fft2)):.2e}")
         
         # Step 2: Cross-correlation in frequency domain
+        # Formula: cross_corr = IFFT( conj(FFT(local)) * FFT(remote) )
+        # Peak at index k means: remote is AHEAD of local by k * tau
         cbuff_c = np.conj(fft1) * fft2
         
         if DEBUG_MODE:
@@ -305,19 +332,43 @@ class TimeOffsetCalculator:
         
         if DEBUG_MODE:
             logger.info(f"[DEBUG] Normalized S: min={np.min(S):.2f}σ, max={np.max(S):.2f}σ")
-            # Find top 5 peaks
+            # Find top 5 peaks, showing both positive and negative interpretations
             top_indices = np.argsort(S)[-5:][::-1]
-            logger.info(f"[DEBUG] Top 5 peaks:")
+            logger.info(f"[DEBUG] Top 5 peaks (showing wraparound interpretations):")
             for i, idx in enumerate(top_indices):
-                delta_t_us = (self.tau * idx) / 1e6
-                logger.info(f"[DEBUG]   #{i+1}: index={idx}, value={S[idx]:.2f}σ, ΔT={delta_t_us:.3f} µs")
+                # Positive interpretation: offset = idx * tau
+                offset_pos_us = (self.tau * idx) / 1e6
+                # Negative interpretation: offset = (idx - N) * tau  
+                offset_neg_us = (self.tau * (idx - self.N)) / 1e6
+                logger.info(f"[DEBUG]   #{i+1}: index={idx}, value={S[idx]:.2f}σ, "  
+                           f"offset={offset_pos_us:+.3f} µs OR {offset_neg_us:+.3f} µs")
         
         # Step 7: Find maximum
         peak_index = int(np.argmax(S))
         peak_value = float(S[peak_index])
         
-        logger.info(f"Peak found at index {peak_index}, value={peak_value:.2f}σ")
+        # Handle wraparound: choose interpretation with smaller absolute offset
+        # Peak at index k can mean:
+        #   - Positive offset: k * tau (remote ahead)
+        #   - Negative offset: (k - N) * tau (remote behind)
+        # We pick the one with smaller absolute value
+        offset_positive = self.tau * peak_index
+        offset_negative = self.tau * (peak_index - self.N)
         
+        if abs(offset_negative) < abs(offset_positive):
+            # Negative offset is more reasonable (peak is in upper half)
+            adjusted_offset = offset_negative
+            logger.info(f"Peak at index {peak_index} (upper half of N={self.N})")
+            logger.info(f"  Interpreted as NEGATIVE offset: remote is BEHIND by {-adjusted_offset/1e6:.3f} µs")
+        else:
+            # Positive offset is more reasonable (peak is in lower half)
+            adjusted_offset = offset_positive
+            logger.info(f"Peak at index {peak_index} (lower half of N={self.N})")
+            logger.info(f"  Interpreted as POSITIVE offset: remote is AHEAD by {adjusted_offset/1e6:.3f} µs")
+        
+        logger.info(f"Peak value: {peak_value:.2f}σ")
+        
+        # Return the raw peak_index, offset adjustment happens in run_correlation
         return S, peak_value, peak_index
     
     def assess_confidence(self, peak_value: float, correlation_func: np.ndarray, 
@@ -416,8 +467,17 @@ class TimeOffsetCalculator:
             del buff1, buff2
             gc.collect()
             
-            # Step 3: Calculate offset
-            offset_ps = self.tau * peak_index
+            # Step 3: Calculate offset with wraparound handling
+            # Peak at index k can mean offset = k*tau OR offset = (k-N)*tau
+            # Choose the interpretation with smaller absolute value
+            offset_positive = self.tau * peak_index
+            offset_negative = self.tau * (peak_index - self.N)
+            
+            if abs(offset_negative) < abs(offset_positive):
+                offset_ps = offset_negative  # Remote is BEHIND (negative offset)
+            else:
+                offset_ps = offset_positive  # Remote is AHEAD (positive offset)
+            
             offset_ms = offset_ps / 1e9  # Convert to milliseconds
             
             # Step 4: Assess confidence
@@ -426,6 +486,12 @@ class TimeOffsetCalculator:
             logger.info("="*60)
             logger.info("RESULTS:")
             logger.info(f"Time Offset: {offset_ps:,} ps ({offset_ms:.6f} ms)")
+            if offset_ps >= 0:
+                logger.info(f"  → Remote is AHEAD of local by {offset_ps/1e6:.3f} µs")
+                logger.info(f"  → To align: remote_adjusted = remote - {offset_ps:,} ps")
+            else:
+                logger.info(f"  → Remote is BEHIND local by {-offset_ps/1e6:.3f} µs")
+                logger.info(f"  → To align: remote_adjusted = remote - ({offset_ps:,}) ps = remote + {-offset_ps:,} ps")
             logger.info(f"Peak Index (kmax): {peak_index}")
             logger.info(f"Peak Strength: {peak_value:.2f}σ")
             logger.info(f"Confidence: {assessment['confidence']}")
