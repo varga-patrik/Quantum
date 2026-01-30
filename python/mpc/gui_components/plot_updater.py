@@ -15,7 +15,8 @@ from gui_components.config import (
     COINCIDENCE_WINDOW_PS,
     TIMESTAMP_BUFFER_DURATION_SEC,
     TIMESTAMP_BUFFER_MAX_SIZE,
-    TIMESTAMP_BATCH_INTERVAL_SEC
+    TIMESTAMP_BATCH_INTERVAL_SEC,
+    DEBUG_MODE
 )
 
 logger = logging.getLogger(__name__)
@@ -107,6 +108,28 @@ class PlotUpdater:
             return
 
         self.streaming_is_mock = is_mock
+        
+        # Re-read config to get latest COINCIDENCE_WINDOW_PS value
+        import importlib
+        import gui_components.config as config_module
+        importlib.reload(config_module)
+        self.coincidence_counter.window_ps = config_module.COINCIDENCE_WINDOW_PS
+        logger.info(f"Starting streaming with coincidence window ±{config_module.COINCIDENCE_WINDOW_PS} ps")
+        
+        # Clear all buffers to ensure fresh data for this session
+        # This prevents mixing old timestamps with new ones (different ref_second epochs)
+        logger.info("Clearing all timestamp buffers for fresh streaming session")
+        for ch in [1, 2, 3, 4]:
+            self.local_buffers[ch].clear()
+            self.remote_buffers[ch].clear()
+        
+        # Reset coincidence tracking
+        self.coincidence_series = np.zeros((4, 20))
+        self.last_coincidence_counts = [0, 0, 0, 0]
+        self.last_sent_counts = {1: 0, 2: 0, 3: 0, 4: 0}
+        
+        # Reset file-tail offsets (will be set properly when tailing starts on NEW files)
+        self._file_tail_offsets = {1: 0, 2: 0, 3: 0, 4: 0}
         
         logger.info(f"Starting timestamp streaming from {tc_address} (mock={is_mock})")
         
@@ -527,7 +550,7 @@ class PlotUpdater:
         """Calculate coincidences between local and remote timestamps.
         
         Uses the CoincidenceCounter to find timestamp pairs within the
-        configured coincidence window (±1ns by default).
+        configured coincidence window.
         """
         if not self.app_ref or not hasattr(self.app_ref, 'correlation_pairs'):
             return
@@ -538,10 +561,12 @@ class PlotUpdater:
         # Get correlation pairs: [(local_ch, remote_ch), ...]
         pairs = self.app_ref.correlation_pairs
         
-        # DEBUG: Log buffer sizes
-        local_sizes = [len(self.local_buffers[ch].get_timestamps()) for ch in [1,2,3,4]]
-        remote_sizes = [len(self.remote_buffers[ch].get_timestamps()) for ch in [1,2,3,4]]
-        logger.debug(f"Buffer sizes - Local: {local_sizes}, Remote: {remote_sizes}")
+        # Debug logging only when enabled
+        if DEBUG_MODE:
+            local_sizes = [len(self.local_buffers[ch].get_timestamps()) for ch in [1,2,3,4]]
+            remote_sizes = [len(self.remote_buffers[ch].get_timestamps()) for ch in [1,2,3,4]]
+            logger.debug(f"Coincidence calc: window=±{self.coincidence_counter.window_ps}ps, offset={time_offset_ps}ps")
+            logger.debug(f"  Buffer sizes - Local: {local_sizes}, Remote: {remote_sizes}")
         
         # Calculate coincidences for each pair
         new_counts = []
@@ -549,12 +574,24 @@ class PlotUpdater:
             local_ts = self.local_buffers[local_ch].get_timestamps()
             remote_ts = self.remote_buffers[remote_ch].get_timestamps()
             
-            logger.debug(f"Pair ({local_ch},{remote_ch}): local={len(local_ts)}, remote={len(remote_ts)}")
+            # Debug: show timestamp ranges to verify overlap
+            if DEBUG_MODE and len(local_ts) > 0 and len(remote_ts) > 0:
+                logger.info(f"  Pair ({local_ch},{remote_ch}): local range [{local_ts[0]:,} - {local_ts[-1]:,}], "
+                           f"remote range [{remote_ts[0]:,} - {remote_ts[-1]:,}]")
+                # Check overlap after applying offset
+                remote_adjusted_first = int(remote_ts[0]) - time_offset_ps
+                remote_adjusted_last = int(remote_ts[-1]) - time_offset_ps
+                local_first, local_last = int(local_ts[0]), int(local_ts[-1])
+                overlap = min(local_last, remote_adjusted_last) - max(local_first, remote_adjusted_first)
+                logger.info(f"    After offset: remote range [{remote_adjusted_first:,} - {remote_adjusted_last:,}], overlap={overlap/1e12:.3f}s")
             
             count = self.coincidence_counter.count_coincidences(
                 local_ts, remote_ts, time_offset_ps
             )
-            logger.debug(f"Pair ({local_ch},{remote_ch}): count={count}")
+            
+            if DEBUG_MODE:
+                logger.debug(f"  Pair ({local_ch},{remote_ch}): local={len(local_ts)}, remote={len(remote_ts)}, coincidences={count}")
+            
             new_counts.append(count)
         
         # Update rolling window (shift left, add new value on right)
@@ -578,6 +615,8 @@ class PlotUpdater:
         Only plots meaningful correlations: cross-site coincidences.
         Single-site correlations are meaningless for entanglement.
         """
+        import datetime
+        
         if not self.app_ref or not hasattr(self.app_ref, 'correlation_pairs'):
             self.ax.text(0.5, 0.5, 'No correlation pairs configured', 
                         ha='center', va='center', transform=self.ax.transAxes)
@@ -588,6 +627,18 @@ class PlotUpdater:
             self._clear_cross_site_data()
             self.ax.text(0.5, 0.5, 'Peer not connected - no cross-site data', 
                         ha='center', va='center', transform=self.ax.transAxes)
+            return
+        
+        # Check if this is server (Wigner) - it doesn't receive remote timestamps
+        if self.app_ref.computer_role == "computer_a":
+            current_time = datetime.datetime.now().strftime('%H:%M:%S')
+            self.ax.text(0.5, 0.5, 
+                        f'Server Mode (Wigner) - Sending timestamps to BME\n\n'
+                        f'Coincidence detection runs on BME (client) side\n'
+                        f'because BME receives timestamps from both sites.\n\n'
+                        f'Last update: {current_time}',
+                        ha='center', va='center', transform=self.ax.transAxes,
+                        fontsize=11, bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
             return
         
         data = self.coincidence_series.copy()
@@ -618,25 +669,20 @@ class PlotUpdater:
             self.ax.set_ylim([-0.05, 1.05])
         else:
             max_count = max(1, np.max(data))
-            self.ax.set_ylim([-max_count*0.05, max_count*1.1])
+            # Use minimum y-limit of 10 so zeros are clearly visible as flat line
+            y_max = max(10, max_count * 1.2)
+            self.ax.set_ylim([-y_max * 0.05, y_max])
         
-        self.ax.set_title('Cross-Site Coincidence Counts (Quantum Correlations)', fontsize=12, fontweight='bold')
-        self.ax.set_xlabel('Time Point')
+        # Show current time and window info in title for visual feedback
+        import datetime
+        current_time = datetime.datetime.now().strftime('%H:%M:%S')
+        window_ps = self.coincidence_counter.window_ps
+        self.ax.set_title(f'Cross-Site Coincidences | Window: ±{window_ps:,} ps | {current_time}', 
+                         fontsize=11, fontweight='bold')
+        self.ax.set_xlabel('Time Point (0.5s intervals)')
         self.ax.set_ylabel('Coincidences' if not self.normalize_plot else 'Normalized')
         self.ax.set_xticks(range(0, 20))
         self.ax.grid(True, alpha=0.3)
-
-    def _draw_placeholder_plot(self):
-        """Placeholder plot while streaming is not yet implemented."""
-        self.ax.text(0.5, 0.5, 
-                    'Timestamp Streaming Not Yet Implemented\n\n'
-                    'Next Steps:\n'
-                    '1. Implement timestamp streaming from Time Controller\n'
-                    '2. Exchange timestamp batches between sites\n'
-                    '3. Calculate coincidences with picosecond precision\n'
-                    '4. Plot cross-site coincidence rates',
-                    ha='center', va='center', transform=self.ax.transAxes,
-                    fontsize=11, bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
 
     def _draw_plot(self):
         """Update the plot based on current mode."""

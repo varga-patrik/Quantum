@@ -135,6 +135,7 @@ class PeerCommandHandlers:
             import base64
             import zlib
             import numpy as np
+            from gui_components.config import DEBUG_MODE
             
             if not isinstance(data, dict) or 'timestamps' not in data:
                 logger.warning("Invalid timestamp batch format")
@@ -159,8 +160,11 @@ class PeerCommandHandlers:
                         
                         self.app.plot_updater.remote_buffers[channel].add_timestamps_array(ts_array)
                         total_received += len(ts_array)
+                        if DEBUG_MODE:
+                            logger.debug(f"Ch{channel}: Added {len(ts_array)} remote timestamps, buffer now {len(self.app.plot_updater.remote_buffers[channel])}")
             
-            logger.debug(f"Received timestamp batch: {total_received} total timestamps")
+            if DEBUG_MODE and total_received > 0:
+                logger.debug(f"Received timestamp batch: {total_received} total timestamps from peer")
         except Exception as e:
             logger.error(f"Error handling remote timestamp batch: {e}")
     

@@ -1,7 +1,7 @@
 """GUI configuration constants and theme settings."""
 
 # Debug mode - set to True for extensive logging
-DEBUG_MODE = True  # Set to True to enable detailed diagnostic logs
+DEBUG_MODE = False  # Set to True to enable detailed diagnostic logs
 
 # Hardware IP addresses for SERVER side (Wigner)
 SERVER_TC_ADDRESS = "148.6.27.28"
@@ -23,7 +23,7 @@ DEFAULT_BIN_COUNT = 20
 DEFAULT_HISTOGRAMS = [1, 2, 3, 4]
 
 # Timestamp streaming settings
-COINCIDENCE_WINDOW_PS = 1000  # ±1ns coincidence window in picoseconds (tau)
+COINCIDENCE_WINDOW_PS = 2000  # ±1ns coincidence window in picoseconds (tau)
 TIMESTAMP_BUFFER_DURATION_SEC = 1.0  # Keep 1 second of timestamps in memory
 TIMESTAMP_BUFFER_MAX_SIZE = 10_000_000  # Max timestamps per channel (safety limit)
 TIMESTAMP_BATCH_INTERVAL_SEC = 0.1  # Send batches to peer every 0.1 seconds (10 Hz)
