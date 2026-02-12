@@ -1,7 +1,7 @@
 """GUI configuration constants and theme settings."""
 
 # Debug mode - set to True for extensive logging
-DEBUG_MODE = False  # Set to True to enable detailed diagnostic logs
+DEBUG_MODE = True  # Set to True to enable detailed diagnostic logs
 
 # Hardware IP addresses for SERVER side (Wigner)
 SERVER_TC_ADDRESS = "148.6.27.28"
@@ -24,10 +24,21 @@ DEFAULT_HISTOGRAMS = [1, 2, 3, 4]
 
 # Timestamp streaming settings
 COINCIDENCE_WINDOW_PS = 2000  # ±1ns coincidence window in picoseconds (tau)
-TIMESTAMP_BUFFER_DURATION_SEC = 1.0  # Keep 1 second of timestamps in memory
+TIMESTAMP_BUFFER_DURATION_SEC = 2.0  # Keep 2 seconds of local timestamps (survives reference_second boundary transitions)
+REMOTE_BUFFER_DURATION_SEC = 3.0  # Keep 3 seconds of remote timestamps (handles batch delays & second-boundary cleanups)
 TIMESTAMP_BUFFER_MAX_SIZE = 10_000_000  # Max timestamps per channel (safety limit)
 TIMESTAMP_BATCH_INTERVAL_SEC = 0.1  # Send batches to peer every 0.1 seconds (10 Hz)
 STREAM_PORTS_BASE = 4241  # Time Controller streaming ports: 4242, 4243, 4244, 4245
+
+# Mock Time Controller correlation mode (only used when real hardware unavailable)
+# 'cross_site': Site A and Site B detect same photon events (quantum entanglement)
+#               → Site A Ch1 correlates with Site B Ch1 (with time offset)
+# 'local_pairs': Ch1↔Ch2 and Ch3↔Ch4 correlate locally within each site
+MOCK_CORRELATION_MODE = 'cross_site'  # MUST be 'cross_site' or 'local_pairs'
+
+# Mock time offset between sites (in picoseconds)
+# Server (Wigner) will be this many picoseconds LATER than Client (BME)
+MOCK_TIME_OFFSET_PS = 5000 #103673856
 
 # Theme colors
 BG_COLOR = '#1E1E1E'

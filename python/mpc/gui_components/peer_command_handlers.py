@@ -149,16 +149,25 @@ class PeerCommandHandlers:
                 channel = int(channel_str)
                 if channel in [1, 2, 3, 4] and isinstance(ts_data, dict):
                     # Decompress binary timestamp data
-                    encoded = ts_data.get('data', '')
+                    ts_encoded = ts_data.get('data', '')
+                    ref_encoded = ts_data.get('ref_data', '')
                     count = ts_data.get('count', 0)
                     
-                    if encoded and count > 0:
-                        # Decode base64 -> decompress -> convert to numpy array
-                        compressed = base64.b64decode(encoded)
-                        binary = zlib.decompress(compressed)
-                        ts_array = np.frombuffer(binary, dtype=np.uint64)
+                    if ts_encoded and count > 0:
+                        # Decode timestamps: base64 -> decompress -> numpy array
+                        ts_compressed = base64.b64decode(ts_encoded)
+                        ts_binary = zlib.decompress(ts_compressed)
+                        ts_array = np.frombuffer(ts_binary, dtype=np.uint64)
                         
-                        self.app.plot_updater.remote_buffers[channel].add_timestamps_array(ts_array)
+                        # Decode reference seconds if available
+                        ref_array = None
+                        if ref_encoded:
+                            ref_compressed = base64.b64decode(ref_encoded)
+                            ref_binary = zlib.decompress(ref_compressed)
+                            ref_array = np.frombuffer(ref_binary, dtype=np.uint64)
+                        
+                        # Add with reference seconds for proper cleanup
+                        self.app.plot_updater.remote_buffers[channel].add_timestamps_array(ts_array, ref_array)
                         total_received += len(ts_array)
                         if DEBUG_MODE:
                             logger.debug(f"Ch{channel}: Added {len(ts_array)} remote timestamps, buffer now {len(self.app.plot_updater.remote_buffers[channel])}")

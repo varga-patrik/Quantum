@@ -1,9 +1,17 @@
 """
 Mock Time Controller for testing and fallback when real hardware is unavailable.
 ⚠️ THIS IS A MOCK - NOT REAL HARDWARE! ⚠️
-Simulates Time Controller timestamp streaming for local testing.
+Simulates Time Controller timestamp streaming with TESTABLE correlations.
+
+CORRELATION MODES (configured in gui_components/config.py):
+1. 'cross_site' (DEFAULT): Site A and Site B detect same photon events (with time offset)
+   - Use for testing inter-site correlations
+   - Site A Ch1 correlates with Site B Ch1 (same for all channels)
+   
+2. 'local_pairs': Channels 1↔2 and 3↔4 correlate locally at each site
+   - Use for testing local channel correlations
+   - Ch1 correlates with Ch2, Ch3 correlates with Ch4 (within same site)
 """
-import random
 import numpy as np
 import logging
 import struct
@@ -11,44 +19,89 @@ import time
 
 logger = logging.getLogger(__name__)
 
+# Import correlation mode and time offset from central config
+try:
+    from gui_components.config import MOCK_CORRELATION_MODE, MOCK_TIME_OFFSET_PS, DEBUG_MODE
+except ImportError:
+    raise ImportError("Could not import variables from config.")
 
 class MockTimeController:
     """
     Mock time controller that simulates IDQ Time Controller (ID900/ID1000)
     ⚠️ THIS IS A MOCK - SIMULATED DATA ONLY! ⚠️
     
-    Simulates:
-    - Timestamp streaming with picosecond precision
-    - 4-channel photon detection
-    - Realistic quantum correlations (for entangled pairs)
-    - Reference second counter
+    CORRELATION MODES:
+    - 'cross_site': All sites detect same photon events (quantum entanglement source)
+      → Site A Ch1 correlates with Site B Ch1 (with time offset)
+      → Tests inter-site synchronization and coincidence detection
+      
+    - 'local_pairs': Ch1↔Ch2 and Ch3↔Ch4 correlate within each site
+      → Site A Ch1 correlates with Site A Ch2 only
+      → Tests local channel pair correlations
+    
+    Set mode via: mock_time_controller.MOCK_CORRELATION_MODE = 'cross_site' or 'local_pairs'
     """
-    def __init__(self, disable_data: bool = True):
+    def __init__(self, disable_data: bool = False, site_name: str = "unknown"):
+        # Validate correlation mode
+        valid_modes = ['cross_site', 'local_pairs']
+        if MOCK_CORRELATION_MODE not in valid_modes:
+            error_msg = (
+                f"Invalid MOCK_CORRELATION_MODE: '{MOCK_CORRELATION_MODE}'. "
+                f"Must be one of {valid_modes}. "
+                f"Check gui_components/config.py and set MOCK_CORRELATION_MODE = 'cross_site' or 'local_pairs'"
+            )
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        
         print("╔═══════════════════════════════════════════════════════════╗")
-        print("║   ⚠️  MOCK TIME CONTROLLER - SIMULATED DATA ONLY ⚠️      ║")
-        print("║   NOT REAL HARDWARE - FOR TESTING PURPOSES               ║")
+        print("║   ⚠️  MOCK TIME CONTROLLER - TESTABLE SIMULATED DATA    ║")
+        print("║   NOT REAL HARDWARE - FOR CORRELATION TESTING            ║")
+        print(f"║   Mode: {MOCK_CORRELATION_MODE:^48} ║")
         print("╚═══════════════════════════════════════════════════════════╝")
-        logger.warning("MockTimeController initialized - using SIMULATED data")
+        logger.warning(f"MockTimeController initialized - mode: {MOCK_CORRELATION_MODE}, site: {site_name}")
         
         self._is_mock = True
-        self._disable_data = disable_data  # If True, return no data (for testing)
-        self._base_seed = random.randint(0, 1000000)
+        self._disable_data = disable_data
+        self._site_name = site_name
         
         if self._disable_data:
             print("║   📛 DATA DISABLED - Returning ZERO/EMPTY data         ║")
             logger.warning("MockTimeController: DATA DISABLED - returning zero data")
         
-        # Simulation parameters
-        self._detection_rate = 50000  # 50 kHz per channel (singles)
-        self._coincidence_rate = 1000  # 1 kHz (coincidences between channels)
-        self._reference_second = 0  # Current GPS reference second
-        self._start_time = time.time()
+        # TESTABLE PARAMETERS - Known correlation structure
+        self._singles_rate = 10000  # Singles per second per channel (10 kHz)
+        self._coincidence_rate = 500  # Correlated events per second (500 Hz)
+        self._reference_second = 0
         
-        # Detector counts (cumulative)
-        self._counter_values = [random.randint(40000, 80000) for _ in range(4)]
+        # Cumulative counter values (simulated)
+        np.random.seed(42)  # Fixed seed for reproducibility
+        self._counter_values = [np.random.randint(40000, 80000) for _ in range(4)]
+        
+        # Site-specific time offset (simulates GPS sync error)
+        # AND site-specific seed offset for localhost testing
+        # Server (Wigner): +offset ps (later), Client (BME): 0 ps (reference)
+        logger.info(f"MockTC initializing with site_name='{site_name}', MOCK_TIME_OFFSET_PS={MOCK_TIME_OFFSET_PS}")
+        
+        if "SERVER" in site_name.upper() or "WIGNER" in site_name.upper() or "148.6.27.28" in site_name:
+            self._site_time_offset_ps = MOCK_TIME_OFFSET_PS  # This is added to all timestamps
+            self._site_seed_offset = 1000000  # Different seeds from client
+            logger.info(f"MockTC: Identified as SERVER ({site_name}), offset={MOCK_TIME_OFFSET_PS}ps, seed_offset={self._site_seed_offset}")
+        elif "CLIENT" in site_name.upper() or "BME" in site_name.upper() or "169.254.104.112" in site_name:
+            self._site_time_offset_ps = 0  # Client at reference time
+            self._site_seed_offset = 2000000  # Different seeds from server
+            logger.info(f"MockTC: Identified as CLIENT ({site_name}), offset=0ps, seed_offset={self._site_seed_offset}")
+        else:
+            # Unknown site - use address as hash for unique seed
+            self._site_time_offset_ps = 0
+            self._site_seed_offset = abs(hash(site_name)) % 10000000
+            logger.warning(f"MockTC: Unknown site '{site_name}', using hash-based seed offset: {self._site_seed_offset}")
+    
     
     def generate_timestamps(self, channel: int, duration_ps: int, with_ref_index: bool = True):
-        """Generate mock timestamp data for a channel.
+        """Generate TESTABLE mock timestamp data for a channel.
+        
+        Mode 'cross_site': All sites generate SAME photon events (quantum entanglement)
+        Mode 'local_pairs': Ch1↔Ch2 and Ch3↔Ch4 correlate locally
         
         Args:
             channel: Channel number (1-4)
@@ -58,124 +111,144 @@ class MockTimeController:
         Returns:
             Binary timestamp data (uint64 pairs if with_ref_index, else uint64 only)
         """
-        logger.debug(f"⚠️ MOCK: Generating timestamps for channel {channel}, duration={duration_ps}ps")
-        
-        # Return empty data if disabled
         if self._disable_data:
-            logger.debug(f"⚠️ MOCK: Data disabled - returning empty for channel {channel}")
             return b''
         
-        # Calculate how many timestamps to generate
+        # Use absolute wall-clock time as reference_second (like GPS-synced hardware)
+        # Both SERVER and CLIENT will get the SAME reference_second at the same moment
+        # Modulo 1000 prevents overflow in total_ps calculations (uint64)
+        self._reference_second = int(time.time()) % 1000
+        
         duration_sec = duration_ps / 1e12
-        num_timestamps = int(self._detection_rate * duration_sec)
+        base_seed = 1000000 + self._reference_second
         
-        # Add some randomness to make it realistic
-        num_timestamps = max(1, int(num_timestamps * random.uniform(0.8, 1.2)))
-        
-        timestamps = []
-        
-        # Generate timestamps with realistic distribution
-        # Use current wall-clock time so both sites generate timestamps in same time range
-        current_time_ps = int(time.time() * 1e12)  # Current time in picoseconds
-        
-        # Seed with channel for reproducibility per channel
-        rng = np.random.RandomState(self._base_seed + channel + self._reference_second)
-        
-        for i in range(num_timestamps):
-            # Random offset within the duration (use int64 for large values)
-            offset_ps = int(rng.randint(0, int(duration_ps), dtype=np.int64))
-            ps_in_second = (current_time_ps + offset_ps) % int(1e12)
-            
-            # For channels 1&2, add some correlated timestamps (simulated entanglement)
-            if channel in [1, 2] and rng.random() < 0.05:  # 5% coincidence probability
-                # Add timestamp at roughly same time as partner channel
-                correlation_offset = rng.randint(-1000, 1000)  # ±1ns jitter
-                ps_in_second = max(0, min(int(1e12) - 1, ps_in_second + correlation_offset))
-            
-            # Same for channels 3&4
-            if channel in [3, 4] and rng.random() < 0.05:
-                correlation_offset = rng.randint(-1000, 1000)
-                ps_in_second = max(0, min(int(1e12) - 1, ps_in_second + correlation_offset))
-            
-            if with_ref_index:
-                # Format: [picoseconds_in_second, reference_second_counter]
-                timestamps.append((ps_in_second, self._reference_second))
+        # Determine correlation seed based on mode
+        if MOCK_CORRELATION_MODE == 'cross_site':
+            # ALL sites generate the SAME photon detection events
+            # Ch1 at Site A will correlate with Ch1 at Site B
+            # Use SAME seed across sites (no site_seed_offset)
+            corr_seed = base_seed + channel * 10  # Each channel has unique but shared seed
+        else:  # 'local_pairs'
+            # Ch1↔Ch2 share events, Ch3↔Ch4 share events (local only)
+            # Use site-specific seeds (different per site)
+            if channel in [1, 2]:
+                corr_seed = base_seed + self._site_seed_offset + 100  # Ch1 & Ch2 share locally
             else:
-                timestamps.append(ps_in_second)
+                corr_seed = base_seed + self._site_seed_offset + 200  # Ch3 & Ch4 share locally
         
-        # Sort timestamps (chronological order)
-        if with_ref_index:
-            timestamps.sort(key=lambda x: x[0])
+        # Generate correlated events
+        np.random.seed(corr_seed)
+        num_correlated = int(self._coincidence_rate * duration_sec)
+        correlated_times = np.random.uniform(0, duration_ps, num_correlated)
+        
+        # Add small timing jitter per channel (detector response)
+        # In cross_site: use channel-specific jitter (same base seed → correlations preserved)
+        # In local_pairs: use site-specific jitter (different per site)
+        if MOCK_CORRELATION_MODE == 'cross_site':
+            channel_jitter_seed = corr_seed + channel * 10
         else:
-            timestamps.sort()
+            channel_jitter_seed = corr_seed + self._site_seed_offset + channel * 10
         
-        # Convert to binary format (matches Time Controller format)
+        np.random.seed(channel_jitter_seed)
+        jitter = np.random.normal(0, 100, num_correlated)  # ±100ps jitter
+        correlated_times = correlated_times + jitter
+        
+        # Generate uncorrelated singles (noise) - ALWAYS site-specific
+        singles_seed = base_seed + self._site_seed_offset + channel * 1000 + self._reference_second * 7
+        np.random.seed(singles_seed)
+        num_singles = int((self._singles_rate - self._coincidence_rate) * duration_sec)
+        singles_times = np.random.uniform(0, duration_ps, num_singles)
+        
+        # Combine all events
+        all_times = np.concatenate([correlated_times, singles_times])
+        
+        # Apply site-specific time offset (for cross-site synchronization testing)
+        if DEBUG_MODE and len(all_times) > 0:
+            logger.debug(f"Ch{channel}: Before offset - range [{all_times.min():.0f} - {all_times.max():.0f}] ps")
+        
+        all_times = all_times + self._site_time_offset_ps
+        
+        if DEBUG_MODE and len(all_times) > 0:
+            logger.debug(f"Ch{channel}: After +{self._site_time_offset_ps}ps offset - range [{all_times.min():.0f} - {all_times.max():.0f}] ps")
+        
+        # Wrap to 1-second period
+        all_times = all_times % int(1e12)
+        all_times = np.clip(all_times, 0, int(1e12) - 1)
+        all_times = np.sort(all_times).astype(np.uint64)
+        
+        # Convert to binary format
         if with_ref_index:
-            # dtype: [('timestamp', uint64), ('refIndex', uint64)]
-            binary_data = b''.join(struct.pack('<QQ', ts, ref) for ts, ref in timestamps)
+            binary_data = b''.join(
+                struct.pack('<QQ', int(ts), self._reference_second) 
+                for ts in all_times
+            )
         else:
-            # dtype: uint64
-            binary_data = b''.join(struct.pack('<Q', ts) for ts in timestamps)
+            binary_data = b''.join(struct.pack('<Q', int(ts)) for ts in all_times)
         
-        logger.debug(f"⚠️ MOCK: Generated {len(timestamps)} timestamps, {len(binary_data)} bytes")
         return binary_data
+    
     
     def send_string(self, command: str) -> None:
         """Mock send_string method - simulates SCPI commands."""
-        logger.debug(f"⚠️ MOCK send_string: {command}")
-        
-        # Simulate some state changes
+        # Simulate state changes
         if "REC:PLAY" in command:
-            self._reference_second += 1  # Increment reference second on each acquisition
-        pass
+            self._reference_second += 1
     
     def recv_string(self) -> str:
         """Mock recv_string - returns simulated counter values."""
-        # Return 0 if data disabled
         if self._disable_data:
-            logger.debug("⚠️ MOCK recv_string: 0 (data disabled)")
             return "0"
         
-        # Increment counters to simulate ongoing photon detection
+        # Increment counters deterministically
         for i in range(4):
-            self._counter_values[i] += random.randint(100, 500)
+            self._counter_values[i] += np.random.randint(100, 500)
         
-        value = random.choice(self._counter_values)
-        logger.debug(f"⚠️ MOCK recv_string: {value}")
+        value = self._counter_values[0]
         return str(value)
     
     def __getattr__(self, name):
         """Return a callable for any unmocked method."""
         def mock_method(*args, **kwargs):
-            logger.debug(f"⚠️ MOCK method called: {name}(*{args}, **{kwargs})")
-            # Return 0 if data disabled
             if self._disable_data:
                 if 'counter' in name.lower() or 'count' in name.lower():
                     return 0
                 return None
-            # Return realistic random values with some variation
             if 'counter' in name.lower() or 'count' in name.lower():
-                return random.randint(20000, 100000)
+                return int(50000 + (hash(name) % 50000))
             return None
         return mock_method
     
     def close(self, *args, **kwargs):
         """Mock close method"""
-        logger.debug("⚠️ MOCK close called")
         pass
 
 
 class MockTimeControllerWrapper:
     """
-    Mock wrapper that mimics the TimeController class interface
-    This is used when the real TimeController cannot connect
+    Mock wrapper that mimics the TimeController class interface.
+    Used when the real TimeController cannot connect.
     """
-    def __init__(self, address: str, counters=("1","2","3","4"), integration_time_ps=None, disable_data: bool = True):
+    def __init__(self, address: str, counters=("1","2","3","4"), 
+                 integration_time_ps=None, disable_data: bool = False):
         logger.warning("MockTimeControllerWrapper initialized for %s", address)
         self.address = address
         self.counters = counters
         self.integration_time_ps = integration_time_ps
-        self.tc = MockTimeController(disable_data=disable_data)
+        
+        # Determine site name from address using config addresses
+        try:
+            from gui_components.config import SERVER_TC_ADDRESS, CLIENT_TC_ADDRESS
+            if address == SERVER_TC_ADDRESS or "148.6.27" in address:
+                site_name = "SERVER"  # Wigner (later)
+            elif address == CLIENT_TC_ADDRESS or "169.254" in address:
+                site_name = "CLIENT"  # BME (reference)
+            else:
+                # Fallback: localhost = client, others = server
+                site_name = "CLIENT" if "127.0.0.1" in address or "localhost" in address.lower() else "SERVER"
+        except ImportError:
+            site_name = "CLIENT" if "127.0.0.1" in address or "localhost" in address.lower() else "SERVER"
+        
+        self.tc = MockTimeController(disable_data=disable_data, site_name=site_name)
         self._is_mock = True
         self._disable_data = disable_data
     
@@ -185,27 +258,19 @@ class MockTimeControllerWrapper:
         return self
     
     def query_counter(self, idx: int) -> int:
-        """Return random counter value for the given index"""
+        """Return predictable counter value for the given index."""
         if self._disable_data:
-            logger.debug(f"Mock query_counter({idx}): 0 (data disabled)")
             return 0
-        value = random.randint(20000, 100000)
-        logger.debug(f"Mock query_counter({idx}): {value}")
-        return value
+        return 50000 + idx * 10000
     
     def query_all_counters(self):
-        """Return random values for all 4 counters"""
+        """Return predictable values for all 4 counters."""
         if self._disable_data:
-            values = (0, 0, 0, 0)
-            logger.debug("Mock query_all_counters: (0, 0, 0, 0) (data disabled)")
-            return values
-        values = tuple(random.randint(20000, 100000) for _ in range(4))
-        logger.debug(f"Mock query_all_counters: {values}")
-        return values
+            return (0, 0, 0, 0)
+        return (50000, 60000, 70000, 80000)
     
     def close(self):
         """Mock close"""
-        logger.debug("MockTimeControllerWrapper close called")
         pass
 
 
@@ -235,7 +300,7 @@ def create_time_controller_wrapper(address: str, counters=("1","2","3","4"), int
 
 def safe_zmq_exec(tc, command, zmq_exec_func):
     """
-    Wrapper for zmq_exec that handles MockTimeController
+    Wrapper for zmq_exec that handles MockTimeController.
     
     Args:
         tc: Time controller instance (real or mock)
@@ -243,25 +308,26 @@ def safe_zmq_exec(tc, command, zmq_exec_func):
         zmq_exec_func: The actual zmq_exec function to use for real controllers
     
     Returns:
-        int: Random value (20000-100000) if mock, or real value from device
+        int: Deterministic value if mock, or real value from device
     """
     if isinstance(tc, MockTimeController) or getattr(tc, '_is_mock', False):
-        return random.randint(20000, 100000)
+        # Return deterministic value based on command hash
+        return 50000 + (hash(command) % 50000)
     try:
         return zmq_exec_func(tc, command)
     except Exception:
-        return random.randint(20000, 100000)
+        return 50000 + (hash(command) % 50000)
 
 
 def safe_acquire_histograms(tc, duration, bin_width, bin_count, histograms, acquire_histograms_func):
     """
-    Wrapper for acquire_histograms that handles MockTimeController
+    Wrapper for acquire_histograms that handles MockTimeController.
     
-    Simulates real quantum measurement:
-    - Entangled photon source generates pairs
-    - Each site detects its half of the entangled pairs
-    - Detection events are binned into histograms
-    - Both sites should see correlated patterns
+    TESTABLE CORRELATION STRUCTURE:
+    - Histograms 1 & 2 (channels 1 & 2) share correlated peaks
+    - Histograms 3 & 4 (channels 3 & 4) share correlated peaks  
+    - Both sites generate the SAME correlated pattern with deterministic seeding
+    - This allows verification that correlation algorithms work correctly
     
     Args:
         tc: Time controller instance (real or mock)
@@ -275,58 +341,53 @@ def safe_acquire_histograms(tc, duration, bin_width, bin_count, histograms, acqu
         dict: Mock or real histogram data
     """
     if isinstance(tc, MockTimeController) or getattr(tc, '_is_mock', False):
-        # Simulate quantum entanglement source and detection
-        import time
-        
-        # Sync time across both sites (round to nearest 1 second for stable testing)
-        # This ensures both client and server use the same "entangled photon pair events"
-        sync_time = int(time.time())
-        
-        # Generate entangled photon pair events (shared "reality" between sites)
-        np.random.seed(int(sync_time * 1000) % (2**31))
-        
-        # Number of entangled pairs generated in this measurement window
-        num_pairs = np.random.poisson(1000)  # ~1000 pairs per measurement
-        
-        # Each pair has a detection time (shared between both sites)
-        pair_times = np.random.randint(0, bin_count, size=num_pairs)
-        
-        # Each site detects photons from the pairs with some efficiency
-        # In reality, which detector fires depends on photon polarization + analyzer angle
+        ref_second = getattr(tc, '_reference_second', 0)
+        base_seed = 1000000 + ref_second
         result = {}
         
         for hist_id in histograms:
-            histogram = np.zeros(bin_count, dtype=np.int32)
+            # Determine correlation seed based on mode
+            if MOCK_CORRELATION_MODE == 'cross_site':
+                corr_seed = base_seed + hist_id * 10  # Each channel unique
+            else:  # 'local_pairs'
+                if hist_id in [1, 2]:
+                    corr_seed = base_seed + 100  # Ch1 & Ch2 share
+                else:
+                    corr_seed = base_seed + 200  # Ch3 & Ch4 share
             
-            # For each entangled pair, determine if THIS detector fires
-            # Use a deterministic but channel-dependent seed so correlations exist
-            detection_seed = (int(sync_time * 1000) + hist_id * 1000) % (2**31)
-            np.random.seed(detection_seed)
+            # Generate base histogram
+            np.random.seed(corr_seed + hist_id * 1000)
+            histogram = np.random.poisson(20, bin_count).astype(np.int32)
             
-            # Each detector has ~50% efficiency (quantum detection)
-            detections = np.random.random(num_pairs) < 0.5
-            detected_times = pair_times[detections]
+            # Add correlated peaks
+            np.random.seed(corr_seed)
+            num_peaks = 5
+            peak_positions = np.random.randint(bin_count // 4, 3 * bin_count // 4, num_peaks)
             
-            # Bin the detected photon times into histogram
-            for t in detected_times:
-                if 0 <= t < bin_count:
-                    histogram[t] += 1
+            for peak_pos in peak_positions:
+                peak_width = 10
+                peak_height = 100
+                for i in range(max(0, peak_pos - peak_width), min(bin_count, peak_pos + peak_width)):
+                    distance = abs(i - peak_pos)
+                    gaussian = peak_height * np.exp(-(distance ** 2) / (2 * (peak_width / 3) ** 2))
+                    histogram[i] += int(gaussian)
             
-            # Add dark counts (detector noise)
-            np.random.seed((detection_seed + 999) % (2**31))
-            dark_counts = np.random.poisson(2, bin_count)  # Low background
-            histogram = histogram + dark_counts
+            # Add channel-specific noise
+            np.random.seed(corr_seed + hist_id * 10)
+            noise = np.random.poisson(5, bin_count).astype(np.int32)
+            histogram = histogram + noise
             
             result[hist_id] = histogram
         
         return result
+    
     try:
         return acquire_histograms_func(tc, duration, bin_width, bin_count, histograms)
     except Exception as e:
-        logger.warning("Error acquiring histograms: %s, using mock data", e)
+        logger.warning("Error acquiring histograms: %s, using fallback mock data", e)
         result = {}
         for hist_id in histograms:
-            result[hist_id] = np.random.poisson(50, bin_count)
+            result[hist_id] = np.random.poisson(50, bin_count).astype(np.int32)
         return result
 
 

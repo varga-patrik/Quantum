@@ -7,6 +7,7 @@ import logging
 import time
 from typing import Optional, Callable, Dict, Any
 from secure_channel import SecureChannel
+from gui_components.config import DEBUG_MODE
 
 logger = logging.getLogger(__name__)
 
@@ -62,8 +63,8 @@ class PeerConnection:
         self.command_handlers: Dict[str, Callable] = {}
         self.last_heartbeat = time.time()
         
-        logger.info("PeerConnection initialized: mode=%s, server_ip=%s, port=%d (encrypted)", 
-                   mode, server_ip, port)
+        if DEBUG_MODE:
+            logger.info("PeerConnection initialized: mode=%s, server_ip=%s, port=%d (encrypted)", mode, server_ip, port)
     
     def register_command_handler(self, command: str, handler: Callable):
         """Register a handler function for a specific command type."""
@@ -99,8 +100,8 @@ class PeerConnection:
             
             # Give server thread time to start
             time.sleep(0.1)
-            
-            logger.info("Server listening on %s:%d (waiting for client...)", self.server_ip, self.port)
+            if DEBUG_MODE:
+                logger.info("Server listening on %s:%d (waiting for client...)", self.server_ip, self.port)
             return True
         except Exception as e:
             logger.exception("Failed to start server: %s", e)
@@ -116,7 +117,8 @@ class PeerConnection:
                 self.peer_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             except:
                 pass  # May already be set
-            logger.info("Sent %s message (%d bytes)", data.get('type', 'UNKNOWN'), len(message))
+            if DEBUG_MODE:
+                logger.info("Sent %s message (%d bytes)", data.get('type', 'UNKNOWN'), len(message))
             return True
         except Exception as e:
             logger.error("Failed to send raw message: %s", e)
@@ -140,7 +142,8 @@ class PeerConnection:
             line = buffer.split('\n', 1)[0]
             msg = json.loads(line.strip())
             elapsed = time.time() - start_time
-            logger.info("Received %s message (%.2fs)", msg.get('type', 'UNKNOWN'), elapsed)
+            if DEBUG_MODE:
+                logger.info("Received %s message (%.2fs)", msg.get('type', 'UNKNOWN'), elapsed)
             return msg
         except socket.timeout:
             logger.error("Timeout after %.1fs waiting for message", timeout)
@@ -158,14 +161,16 @@ class PeerConnection:
                 return False
             
             self.secure_channel.set_peer_public_key(msg['public_key'])
-            logger.info("Received client public key")
+            if DEBUG_MODE:
+                logger.info("Received client public key")
             
             # Step 2: Send our public key
             self._send_raw({
                 'type': 'PUBLIC_KEY',
                 'public_key': self.secure_channel.get_public_key_pem()
             })
-            logger.info("Sent server public key")
+            if DEBUG_MODE:
+                logger.info("Sent server public key")
             
             # Step 3: Generate and send encrypted session key
             _, encrypted_key = self.secure_channel.generate_session_key()
@@ -173,18 +178,21 @@ class PeerConnection:
                 'type': 'SESSION_KEY',
                 'encrypted_key': encrypted_key
             })
-            logger.info("Sent encrypted session key")
+            if DEBUG_MODE:
+                logger.info("Sent encrypted session key")
             
             # Step 3.5: Wait for client acknowledgment that session key was received
             msg = self._receive_raw()
             if not msg or msg.get('type') != 'SESSION_KEY_ACK':
                 logger.error("Did not receive SESSION_KEY_ACK")
                 return False
-            logger.info("Received session key acknowledgment")
+            if DEBUG_MODE:
+                logger.info("Received session key acknowledgment")
             
             # Step 4: Authentication challenge
             challenge = self.secure_channel.create_auth_challenge()
-            logger.info("Sending authentication challenge")
+            if DEBUG_MODE:
+                logger.info("Sending authentication challenge")
             self._send_raw({
                 'type': 'AUTH_CHALLENGE',
                 'challenge': challenge
@@ -201,7 +209,8 @@ class PeerConnection:
                 return False
             
             self.encryption_ready = True
-            logger.info("Server handshake complete - channel encrypted")
+            if DEBUG_MODE:
+                logger.info("Server handshake complete - channel encrypted")
             return True
             
         except Exception as e:
@@ -216,7 +225,8 @@ class PeerConnection:
                 'type': 'PUBLIC_KEY',
                 'public_key': self.secure_channel.get_public_key_pem()
             })
-            logger.info("Sent client public key")
+            if DEBUG_MODE:
+                logger.info("Sent client public key")
             
             # Step 2: Receive server's public key
             msg = self._receive_raw()
@@ -224,7 +234,8 @@ class PeerConnection:
                 return False
             
             self.secure_channel.set_peer_public_key(msg['public_key'])
-            logger.info("Received server public key")
+            if DEBUG_MODE:
+                logger.info("Received server public key")
             
             # Step 3: Receive encrypted session key
             msg = self._receive_raw()
@@ -233,33 +244,39 @@ class PeerConnection:
                 return False
             
             self.secure_channel.receive_session_key(msg['encrypted_key'])
-            logger.info("Received and decrypted session key")
+            if DEBUG_MODE:
+                logger.info("Received and decrypted session key")
             
             # Step 3.5: Send acknowledgment that we received the session key
             self._send_raw({
                 'type': 'SESSION_KEY_ACK'
             })
-            logger.info("Sent session key acknowledgment")
+            if DEBUG_MODE:
+                logger.info("Sent session key acknowledgment")
             
             # Step 4: Receive authentication challenge
-            logger.info("Waiting for authentication challenge...")
+            if DEBUG_MODE:
+                logger.info("Waiting for authentication challenge...")
             msg = self._receive_raw()
             if not msg or msg.get('type') != 'AUTH_CHALLENGE':
                 logger.error("Did not receive AUTH_CHALLENGE")
                 return False
             
             # Step 5: Send authentication response
-            logger.info("Received challenge, sending authentication response")
+            if DEBUG_MODE:
+                logger.info("Received challenge, sending authentication response")
             response = self.secure_channel.create_auth_response(msg['challenge'])
             self._send_raw({
                 'type': 'AUTH_RESPONSE',
                 'response': response
             })
-            logger.info("Authentication response sent")
+            if DEBUG_MODE:
+                logger.info("Authentication response sent")
             
             self.encryption_ready = True
             self.secure_channel.authenticated = True
-            logger.info("Client handshake complete - channel encrypted")
+            if DEBUG_MODE:
+                logger.info("Client handshake complete - channel encrypted")
             return True
             
         except Exception as e:
@@ -272,11 +289,13 @@ class PeerConnection:
             try:
                 if attempt > 0:
                     wait_time = 1.0 * attempt  # Exponential backoff
-                    logger.info("Retry attempt %d/%d after %.1fs delay", attempt + 1, retries, wait_time)
+                    if DEBUG_MODE:
+                        logger.info("Retry attempt %d/%d after %.1fs delay", attempt + 1, retries, wait_time)
                     time.sleep(wait_time)
                 
-                logger.info("Connecting to server at %s:%d (attempt %d/%d)", 
-                           self.server_ip, self.port, attempt + 1, retries)
+                if DEBUG_MODE:
+                    logger.info("Connecting to server at %s:%d (attempt %d/%d)", 
+                               self.server_ip, self.port, attempt + 1, retries)
                 self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 self.client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
                 self.client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -304,7 +323,8 @@ class PeerConnection:
                 self.heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
                 self.heartbeat_thread.start()
                 
-                logger.info("Successfully connected to server at %s:%d (encrypted)", self.server_ip, self.port)
+                if DEBUG_MODE:
+                    logger.info("Successfully connected to server at %s:%d (encrypted)", self.server_ip, self.port)
                 return True
                 
             except socket.timeout:
@@ -347,7 +367,8 @@ class PeerConnection:
                     self.heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
                     self.heartbeat_thread.start()
                     
-                    logger.info("Peer connected from %s (encrypted)", addr)
+                    if DEBUG_MODE:
+                        logger.info("Peer connected from %s (encrypted)", addr)
                 else:
                     conn.close()
                     

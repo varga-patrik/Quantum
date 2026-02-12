@@ -9,6 +9,10 @@ import time
 from datetime import datetime
 import numpy as np
 
+# Suppress matplotlib debug logging (not part of this app)
+logging.getLogger('matplotlib').setLevel(logging.WARNING)
+logging.getLogger('PIL').setLevel(logging.WARNING)
+
 from gui_components import (
     DEFAULT_TC_ADDRESS, SERVER_TC_ADDRESS, CLIENT_TC_ADDRESS,
     SERVER_FS740_ADDRESS, CLIENT_FS740_ADDRESS,
@@ -209,8 +213,10 @@ class App:
             
         except (ConnectionError, Exception) as e:
             logger.warning("Failed to connect to Time Controller/DLT: %s", e)
-            logger.info("Using MockTimeController")
-            tc = MockTimeController()
+            # Use role-based site name for mock (matches connection dialog role)
+            site_role = "SERVER" if self.computer_role == "computer_a" else "CLIENT"
+            logger.info("Using MockTimeController with role: %s (address: %s)", site_role, tc_addr)
+            tc = MockTimeController(site_name=site_role)
             self.bin_width = DEFAULT_BIN_WIDTH
             self.dlt = None
         
@@ -352,11 +358,15 @@ class App:
     def _build_status_indicator(self):
         """Build status indicator bar for mock mode."""
         if is_mock_controller(self.tc):
+            # Get correlation mode from config
+            from gui_components.config import MOCK_CORRELATION_MODE
+            mode_text = "Cross-Site" if MOCK_CORRELATION_MODE == 'cross_site' else "Local Pairs"
+            
             status_frame = tk.Frame(self.root, background='#ff9800', relief=tk.RAISED, bd=2)
             status_frame.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 5))
             status_label = tk.Label(
                 status_frame,
-                text="⚠️ MOCK MODE: Using random data (20,000-100,000) - Time Controller not connected",
+                text=f"⚠️ MOCK MODE: {mode_text} Correlations - Time Controller not connected",
                 font=('Arial', 10, 'bold'),
                 background='#ff9800',
                 foreground='white',

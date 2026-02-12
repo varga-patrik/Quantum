@@ -55,11 +55,12 @@ class PlotUpdater:
             3: TimestampBuffer(3, TIMESTAMP_BUFFER_DURATION_SEC, TIMESTAMP_BUFFER_MAX_SIZE),
             4: TimestampBuffer(4, TIMESTAMP_BUFFER_DURATION_SEC, TIMESTAMP_BUFFER_MAX_SIZE)
         }
+        from gui_components.config import REMOTE_BUFFER_DURATION_SEC
         self.remote_buffers = {
-            1: TimestampBuffer(1, TIMESTAMP_BUFFER_DURATION_SEC, TIMESTAMP_BUFFER_MAX_SIZE),
-            2: TimestampBuffer(2, TIMESTAMP_BUFFER_DURATION_SEC, TIMESTAMP_BUFFER_MAX_SIZE),
-            3: TimestampBuffer(3, TIMESTAMP_BUFFER_DURATION_SEC, TIMESTAMP_BUFFER_MAX_SIZE),
-            4: TimestampBuffer(4, TIMESTAMP_BUFFER_DURATION_SEC, TIMESTAMP_BUFFER_MAX_SIZE)
+            1: TimestampBuffer(1, REMOTE_BUFFER_DURATION_SEC, TIMESTAMP_BUFFER_MAX_SIZE),
+            2: TimestampBuffer(2, REMOTE_BUFFER_DURATION_SEC, TIMESTAMP_BUFFER_MAX_SIZE),
+            3: TimestampBuffer(3, REMOTE_BUFFER_DURATION_SEC, TIMESTAMP_BUFFER_MAX_SIZE),
+            4: TimestampBuffer(4, REMOTE_BUFFER_DURATION_SEC, TIMESTAMP_BUFFER_MAX_SIZE)
         }
         
         # Coincidence counter
@@ -85,7 +86,7 @@ class PlotUpdater:
         
         # Batch sending for peer exchange
         self.last_batch_send_time = time.time()
-        self.last_sent_counts = {1: 0, 2: 0, 3: 0, 4: 0}  # Track how many timestamps we've already sent per channel
+        self.last_sent_timestamp = {1: 0, 2: 0, 3: 0, 4: 0}  # Track the last timestamp value sent per channel
 
     def start_streaming(self, tc_address: str, is_mock: bool = False, 
                        local_save_channels: list = None, remote_save_channels: list = None):
@@ -126,7 +127,7 @@ class PlotUpdater:
         # Reset coincidence tracking
         self.coincidence_series = np.zeros((4, 20))
         self.last_coincidence_counts = [0, 0, 0, 0]
-        self.last_sent_counts = {1: 0, 2: 0, 3: 0, 4: 0}
+        self.last_sent_timestamp = {1: 0, 2: 0, 3: 0, 4: 0}
         
         # Reset file-tail offsets (will be set properly when tailing starts on NEW files)
         self._file_tail_offsets = {1: 0, 2: 0, 3: 0, 4: 0}
@@ -275,7 +276,9 @@ class PlotUpdater:
         # in parallel with DLT saving. Since DLT is already writing the timestamps to files,
         # we tail those files for reliable live updates.
         if is_mock:
-            self.stream_client = TimeControllerStreamClient(tc_address, is_mock=True)
+            # Pass site role to ensure correct mock offset is applied
+            site_role = "SERVER" if self.app_ref.computer_role == "computer_a" else "CLIENT"
+            self.stream_client = TimeControllerStreamClient(tc_address, is_mock=True, site_role=site_role)
             for channel in [1, 2, 3, 4]:
                 callback = lambda data, ch=channel: self._on_timestamp_batch(ch, data)
                 self.stream_client.start_stream(channel, callback, port=None)
@@ -365,7 +368,8 @@ class PlotUpdater:
                         file_size = path.stat().st_size
                         # Align to 16-byte boundary (timestamp pairs are 2x uint64 = 16 bytes)
                         self._file_tail_offsets[ch] = (file_size // 16) * 16
-                        logger.info(f"Ch{ch}: File-tail starting at offset {self._file_tail_offsets[ch]} (skipping existing data)")
+                        if DEBUG_MODE:
+                            logger.debug(f"Ch{ch}: File-tail starting at offset {self._file_tail_offsets[ch]} (skipping existing data)")
                     else:
                         self._file_tail_offsets[ch] = 0
                 except Exception as e:
@@ -454,10 +458,12 @@ class PlotUpdater:
         """
         try:
             if len(binary_data) > 0:
-                logger.info(f"Ch{channel}: Received {len(binary_data)} bytes from stream")
+                if DEBUG_MODE:
+                    logger.debug(f"Ch{channel}: Received {len(binary_data)} bytes from stream")
                 # Add timestamps to buffer
                 self.local_buffers[channel].add_timestamps(binary_data, with_ref_index=True)
-                logger.info(f"Ch{channel}: Buffer size now {len(self.local_buffers[channel])}")
+                if DEBUG_MODE:
+                    logger.debug(f"Ch{channel}: Buffer size now {len(self.local_buffers[channel])}")
             else:
                 logger.warning(f"Ch{channel}: Received empty data packet")
                 
@@ -474,28 +480,41 @@ class PlotUpdater:
             import zlib
             
             # Send only NEW timestamps since last batch (prevent re-sending same data)
-            # Collect timestamps from all channels as compressed binary
+            # Uses TIMESTAMP-BASED tracking: immune to buffer trimming/cleanup
             batch_data = {}
             total_ts = 0
             for channel in [1, 2, 3, 4]:
-                all_timestamps = self.local_buffers[channel].get_timestamps()
+                all_timestamps, all_ref_seconds = self.local_buffers[channel].get_timestamps_with_ref()
                 
-                # Only send NEW timestamps since last batch
-                last_sent = self.last_sent_counts[channel]
-                new_timestamps = all_timestamps[last_sent:]  # Slice from last sent position to end
+                if len(all_timestamps) == 0:
+                    continue
+                
+                # Only send timestamps NEWER than the last one we sent
+                # This is immune to buffer trimming (no index tracking needed)
+                last_ts = self.last_sent_timestamp[channel]
+                mask = all_timestamps > last_ts
+                new_timestamps = all_timestamps[mask]
+                new_ref_seconds = all_ref_seconds[mask]
                 
                 if len(new_timestamps) > 0:
-                    # Update tracking
-                    self.last_sent_counts[channel] = len(all_timestamps)
+                    # Update tracking with the latest timestamp value
+                    self.last_sent_timestamp[channel] = int(all_timestamps[-1])
                     
-                    # Convert to binary (much more efficient than JSON)
-                    binary = new_timestamps.tobytes()
-                    # Compress to reduce network load
-                    compressed = zlib.compress(binary, level=1)  # Fast compression
+                    # Convert timestamps to binary (much more efficient than JSON)
+                    ts_binary = new_timestamps.tobytes()
+                    ref_binary = new_ref_seconds.tobytes()
+                    
+                    # Compress both arrays
+                    ts_compressed = zlib.compress(ts_binary, level=1)
+                    ref_compressed = zlib.compress(ref_binary, level=1)
+                    
                     # Encode as base64 for JSON transport
-                    encoded = base64.b64encode(compressed).decode('ascii')
+                    ts_encoded = base64.b64encode(ts_compressed).decode('ascii')
+                    ref_encoded = base64.b64encode(ref_compressed).decode('ascii')
+                    
                     batch_data[channel] = {
-                        'data': encoded,
+                        'data': ts_encoded,
+                        'ref_data': ref_encoded,
                         'count': len(new_timestamps)
                     }
                     total_ts += len(new_timestamps)
@@ -574,16 +593,25 @@ class PlotUpdater:
             local_ts = self.local_buffers[local_ch].get_timestamps()
             remote_ts = self.remote_buffers[remote_ch].get_timestamps()
             
+            # DEBUG: Check for localhost correlation explosion issue
+            if DEBUG_MODE and len(local_ts) > 100 and len(remote_ts) > 100:
+                # Check if first 100 timestamps are identical (localhost with same mock seeds)
+                local_first100 = set(local_ts[:100])
+                remote_first100 = set(remote_ts[:100])
+                overlap = len(local_first100 & remote_first100)
+                if overlap > 50:
+                    logger.warning(f"⚠️ LOCALHOST ISSUE: Ch{local_ch}↔Ch{remote_ch} have {overlap}/100 identical timestamps! "
+                                 f"Local and remote buffers contain same mock data → correlation explosion.")
+            
             # Debug: show timestamp ranges to verify overlap
             if DEBUG_MODE and len(local_ts) > 0 and len(remote_ts) > 0:
                 logger.info(f"  Pair ({local_ch},{remote_ch}): local range [{local_ts[0]:,} - {local_ts[-1]:,}], "
                            f"remote range [{remote_ts[0]:,} - {remote_ts[-1]:,}]")
-                # Check overlap after applying offset
                 remote_adjusted_first = int(remote_ts[0]) - time_offset_ps
                 remote_adjusted_last = int(remote_ts[-1]) - time_offset_ps
                 local_first, local_last = int(local_ts[0]), int(local_ts[-1])
-                overlap = min(local_last, remote_adjusted_last) - max(local_first, remote_adjusted_first)
-                logger.info(f"    After offset: remote range [{remote_adjusted_first:,} - {remote_adjusted_last:,}], overlap={overlap/1e12:.3f}s")
+                overlap_time = min(local_last, remote_adjusted_last) - max(local_first, remote_adjusted_first)
+                logger.info(f"    After offset: remote range [{remote_adjusted_first:,} - {remote_adjusted_last:,}], overlap={overlap_time/1e12:.3f}s")
             
             count = self.coincidence_counter.count_coincidences(
                 local_ts, remote_ts, time_offset_ps

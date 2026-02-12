@@ -13,6 +13,7 @@ import struct
 import logging
 from typing import Dict, List, Tuple, Optional
 from collections import deque
+from gui_components.config import DEBUG_MODE
 
 logger = logging.getLogger(__name__)
 
@@ -109,13 +110,24 @@ class TimestampBuffer:
         if not self.timestamps:
             return
         
-        # Get the most recent timestamp
-        latest_ps = self.timestamps[-1][0]
-        cutoff_ps = latest_ps - (self.max_duration_sec * 1e12)
+        # Get the most recent timestamp and ref_second
+        latest_total_ps, latest_ref = self.timestamps[-1]
+        
+        # Calculate cutoff time
+        # Keep only timestamps within max_duration_sec of the latest timestamp
+        cutoff_ps = latest_total_ps - (self.max_duration_sec * 1e12)
+        
+        # Count how many to remove (for debugging)
+        removed_count = 0
         
         # Remove old timestamps from the left
+        # Note: total_ps is monotonically increasing (includes ref_second * 1e12)
         while self.timestamps and self.timestamps[0][0] < cutoff_ps:
             self.timestamps.popleft()
+            removed_count += 1
+        
+        if DEBUG_MODE and removed_count > 0:
+            logger.debug(f"Ch{self.channel}: Trimmed {removed_count} old timestamps, buffer size now {len(self.timestamps)}")
     
     def get_timestamps(self) -> np.ndarray:
         """
@@ -131,6 +143,22 @@ class TimestampBuffer:
         # Create a snapshot to avoid "deque mutated during iteration" error
         snapshot = list(self.timestamps)
         return np.array([ts[0] for ts in snapshot], dtype=np.uint64)
+    
+    def get_timestamps_with_ref(self) -> tuple:
+        """
+        Get timestamps and reference seconds for peer-to-peer transmission.
+        Thread-safe snapshot of current data.
+        
+        Returns:
+            Tuple of (timestamps_array, ref_seconds_array)
+        """
+        if not self.timestamps:
+            return (np.array([], dtype=np.uint64), np.array([], dtype=np.uint64))
+        
+        snapshot = list(self.timestamps)
+        timestamps = np.array([ts[0] for ts in snapshot], dtype=np.uint64)
+        ref_seconds = np.array([ts[1] for ts in snapshot], dtype=np.uint64)
+        return (timestamps, ref_seconds)
     
     def clear(self):
         """Clear all timestamps from buffer."""

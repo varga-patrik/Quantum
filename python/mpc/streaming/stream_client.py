@@ -21,16 +21,18 @@ class TimeControllerStreamClient:
     Each channel (1-4) streams on its own port (4242-4245).
     """
     
-    def __init__(self, tc_address: str, is_mock: bool = False):
+    def __init__(self, tc_address: str, is_mock: bool = False, site_role: str = None):
         """
         Initialize stream client.
         
         Args:
             tc_address: Time Controller IP address
             is_mock: If True, use mock streaming (for testing)
+            site_role: Site role ("SERVER" or "CLIENT") for mock timestamp generation
         """
         self.tc_address = tc_address
         self.is_mock = is_mock
+        self.site_role = site_role
         self.stream_threads = {}  # channel -> thread
         self.stream_clients = {}  # channel -> StreamClient instance
         self.running = {}  # channel -> bool
@@ -155,7 +157,10 @@ class TimeControllerStreamClient:
             # Import here to avoid circular dependency
             from mock_time_controller import MockTimeController
             
-            mock_tc = MockTimeController()
+            # Pass site_role as site_name so mock can differentiate client vs server
+            # This ensures correct time offset is applied for each site
+            site_name = self.site_role if self.site_role else self.tc_address
+            mock_tc = MockTimeController(site_name=site_name)
             
             try:
                 while self.running.get(channel, False):
