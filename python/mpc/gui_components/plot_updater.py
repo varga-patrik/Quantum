@@ -401,9 +401,14 @@ class PlotUpdater:
             pass
 
     def _file_tail_worker(self, channel: int):
-        """Continuously read newly appended bytes from the channel's DLT file."""
-        chunk_size = 256 * 1024  # bytes
-        sleep_sec = 0.05
+        """Continuously read newly appended bytes from the channel's DLT file.
+        
+        Reads ALL available data (up to 4 MB) per iteration, and only sleeps
+        when fully caught up.  Combined with the pre-allocated TimestampBuffer,
+        this keeps up with >800 k timestamps/sec per channel.
+        """
+        max_read = 4 * 1024 * 1024   # read up to 4 MB at once
+        idle_sleep = 0.02             # 20 ms sleep only when caught up
 
         while not self._file_tail_stop_event.is_set():
             acq = getattr(self, 'acquisition_ids', {}).get(channel)
@@ -411,42 +416,61 @@ class PlotUpdater:
             if isinstance(acq, dict):
                 filepath = acq.get('filepath')
             if not filepath:
-                time.sleep(sleep_sec)
+                time.sleep(idle_sleep)
                 continue
 
             try:
                 path = Path(filepath)
                 if not path.exists():
-                    time.sleep(sleep_sec)
+                    time.sleep(idle_sleep)
+                    continue
+
+                # Check how much new data is available
+                file_size = path.stat().st_size
+                offset = self._file_tail_offsets.get(channel, 0)
+
+                # Handle file rotation / truncation
+                if offset > file_size:
+                    offset = 0
+                    self._file_tail_offsets[channel] = 0
+
+                available = file_size - offset
+                if available < 16:          # need at least one 16-byte pair
+                    time.sleep(idle_sleep)
+                    continue
+
+                # Read as much as possible, aligned to 16-byte timestamp pairs
+                to_read = min(available, max_read)
+                to_read = (to_read // 16) * 16
+                if to_read <= 0:
+                    time.sleep(idle_sleep)
                     continue
 
                 with path.open('rb') as f:
-                    offset = self._file_tail_offsets.get(channel, 0)
-                    try:
-                        f.seek(offset)
-                    except Exception:
-                        # If file was rotated/truncated, restart from 0.
-                        offset = 0
-                        f.seek(0)
+                    f.seek(offset)
+                    data = f.read(to_read)
 
-                    data = f.read(chunk_size)
-                    if not data:
-                        time.sleep(sleep_sec)
-                        continue
+                if not data:
+                    time.sleep(idle_sleep)
+                    continue
 
-                    # Keep offset at a multiple of 16 bytes (2x uint64) to avoid splitting pairs.
-                    valid_len = (len(data) // 16) * 16
-                    if valid_len <= 0:
-                        time.sleep(sleep_sec)
-                        continue
+                valid_len = (len(data) // 16) * 16
+                if valid_len <= 0:
+                    time.sleep(idle_sleep)
+                    continue
 
-                    payload = data[:valid_len]
-                    self._file_tail_offsets[channel] = offset + valid_len
+                payload = data[:valid_len]
+                self._file_tail_offsets[channel] = offset + valid_len
 
-                    self.local_buffers[channel].add_timestamps(payload, with_ref_index=True)
+                self.local_buffers[channel].add_timestamps(payload, with_ref_index=True)
+
+                # If we hit the cap, there may be more data — loop immediately
+                if valid_len >= max_read:
+                    continue
+
             except Exception:
                 # File may be temporarily locked or unavailable; retry.
-                time.sleep(0.2)
+                time.sleep(0.1)
     
     def _on_timestamp_batch(self, channel: int, binary_data: bytes):
         """
@@ -569,7 +593,20 @@ class PlotUpdater:
         """Calculate coincidences between local and remote timestamps.
         
         Uses the CoincidenceCounter to find timestamp pairs within the
-        configured coincidence window.
+        configured coincidence window. Only compares the overlapping time
+        region between local and remote buffers (after offset adjustment).
+        
+        The local buffer is intentionally large (>network delay) so that
+        old local timestamps are still available when delayed remote data arrives.
+        
+        Buffer snapshots are cached so each channel is only read once,
+        even when multiple pairs reference the same channel.
+        
+        A single local timestamp can match in multiple pairs independently
+        (e.g., local Ch1 can coincide with both remote Ch1 and Ch4).
+        
+        Stores coincidence RATE (count/overlap_sec) instead of raw count,
+        so the plot is stable regardless of when remote data bursts arrive.
         """
         if not self.app_ref or not hasattr(self.app_ref, 'correlation_pairs'):
             return
@@ -577,50 +614,87 @@ class PlotUpdater:
         # Get time offset from config (measured by C++ Correlator)
         time_offset_ps = getattr(self.app_ref, 'time_offset_ps', 0) or 0
         
-        # Get correlation pairs: [(local_ch, remote_ch), ...]
-        pairs = self.app_ref.correlation_pairs
+        # Snapshot the pairs list — the main thread can add/remove pairs at any time,
+        # so we must work on a frozen copy to avoid KeyError in the cache lookup.
+        pairs = list(self.app_ref.correlation_pairs)
         
-        # Debug logging only when enabled
-        if DEBUG_MODE:
-            local_sizes = [len(self.local_buffers[ch].get_timestamps()) for ch in [1,2,3,4]]
-            remote_sizes = [len(self.remote_buffers[ch].get_timestamps()) for ch in [1,2,3,4]]
-            logger.debug(f"Coincidence calc: window=±{self.coincidence_counter.window_ps}ps, offset={time_offset_ps}ps")
-            logger.debug(f"  Buffer sizes - Local: {local_sizes}, Remote: {remote_sizes}")
+        # Cache buffer snapshots — read each channel only ONCE
+        local_cache = {}
+        remote_cache = {}
+        for local_ch, remote_ch in pairs:
+            if local_ch not in local_cache and local_ch in self.local_buffers:
+                local_cache[local_ch] = self.local_buffers[local_ch].get_timestamps()
+            if remote_ch not in remote_cache and remote_ch in self.remote_buffers:
+                remote_cache[remote_ch] = self.remote_buffers[remote_ch].get_timestamps()
+        
+        # Log buffer sizes for all relevant channels (helps diagnose empty buffers)
+        buf_summary_parts = []
+        for ch in sorted(set(lc for lc, _ in pairs)):
+            n = len(local_cache.get(ch, []))
+            buf_summary_parts.append(f"L{ch}={n}")
+        for ch in sorted(set(rc for _, rc in pairs)):
+            n = len(remote_cache.get(ch, []))
+            buf_summary_parts.append(f"R{ch}={n}")
+        logger.info(f"  Buffers: {', '.join(buf_summary_parts)}")
         
         # Calculate coincidences for each pair
         new_counts = []
         for local_ch, remote_ch in pairs:
-            local_ts = self.local_buffers[local_ch].get_timestamps()
-            remote_ts = self.remote_buffers[remote_ch].get_timestamps()
+            if local_ch not in local_cache or remote_ch not in remote_cache:
+                logger.warning(f"  Pair ({local_ch},{remote_ch}): SKIPPED — channel missing from buffers")
+                new_counts.append(0)
+                continue
+            local_ts = local_cache[local_ch]
+            remote_ts = remote_cache[remote_ch]
             
-            # DEBUG: Check for localhost correlation explosion issue
-            if DEBUG_MODE and len(local_ts) > 100 and len(remote_ts) > 100:
-                # Check if first 100 timestamps are identical (localhost with same mock seeds)
-                local_first100 = set(local_ts[:100])
-                remote_first100 = set(remote_ts[:100])
-                overlap = len(local_first100 & remote_first100)
-                if overlap > 50:
-                    logger.warning(f"⚠️ LOCALHOST ISSUE: Ch{local_ch}↔Ch{remote_ch} have {overlap}/100 identical timestamps! "
-                                 f"Local and remote buffers contain same mock data → correlation explosion.")
+            if len(local_ts) == 0 or len(remote_ts) == 0:
+                logger.info(f"  Pair ({local_ch},{remote_ch}): SKIPPED — empty buffer "
+                           f"(local={len(local_ts)}, remote={len(remote_ts)})")
+                new_counts.append(0)
+                continue
             
-            # Debug: show timestamp ranges to verify overlap
-            if DEBUG_MODE and len(local_ts) > 0 and len(remote_ts) > 0:
-                logger.info(f"  Pair ({local_ch},{remote_ch}): local range [{local_ts[0]:,} - {local_ts[-1]:,}], "
-                           f"remote range [{remote_ts[0]:,} - {remote_ts[-1]:,}]")
-                remote_adjusted_first = int(remote_ts[0]) - time_offset_ps
-                remote_adjusted_last = int(remote_ts[-1]) - time_offset_ps
-                local_first, local_last = int(local_ts[0]), int(local_ts[-1])
-                overlap_time = min(local_last, remote_adjusted_last) - max(local_first, remote_adjusted_first)
-                logger.info(f"    After offset: remote range [{remote_adjusted_first:,} - {remote_adjusted_last:,}], overlap={overlap_time/1e12:.3f}s")
+            # Calculate the overlapping time region between the two buffers
+            # Remote timestamps need offset adjustment for overlap check
+            remote_adjusted_first = int(remote_ts[0]) - time_offset_ps
+            remote_adjusted_last = int(remote_ts[-1]) - time_offset_ps
+            local_first, local_last = int(local_ts[0]), int(local_ts[-1])
+            
+            overlap_start = max(local_first, remote_adjusted_first)
+            overlap_end = min(local_last, remote_adjusted_last)
+            overlap_sec = (overlap_end - overlap_start) / 1e12
+            
+            if overlap_end <= overlap_start:
+                logger.info(f"  Pair ({local_ch},{remote_ch}): NO OVERLAP — "
+                           f"local [{local_first/1e12:.3f}s - {local_last/1e12:.3f}s], "
+                           f"remote_adj [{remote_adjusted_first/1e12:.3f}s - {remote_adjusted_last/1e12:.3f}s]")
+                new_counts.append(0)
+                continue
+            
+            # Trim local timestamps to the overlap region only
+            # Use searchsorted (O(log n)) instead of boolean mask (O(n))
+            l_start = np.searchsorted(local_ts, overlap_start, side='left')
+            l_end = np.searchsorted(local_ts, overlap_end, side='right')
+            local_overlap = local_ts[l_start:l_end]
+            
+            # Trim remote (adjusted) to the overlap region
+            remote_adj_arr = remote_ts.astype(np.int64) - time_offset_ps
+            r_start = np.searchsorted(remote_adj_arr, overlap_start, side='left')
+            r_end = np.searchsorted(remote_adj_arr, overlap_end, side='right')
+            remote_overlap = remote_ts[r_start:r_end]  # Pass original (unadjusted); counter applies offset
             
             count = self.coincidence_counter.count_coincidences(
-                local_ts, remote_ts, time_offset_ps
+                local_overlap, remote_overlap, time_offset_ps
             )
             
-            if DEBUG_MODE:
-                logger.debug(f"  Pair ({local_ch},{remote_ch}): local={len(local_ts)}, remote={len(remote_ts)}, coincidences={count}")
+            # Normalize to coincidence RATE (per second) so the plot doesn't
+            # sawtooth with overlap duration.  Store rate, not raw count.
+            rate = count / overlap_sec if overlap_sec > 0.5 else 0
             
-            new_counts.append(count)
+            logger.info(f"  Pair ({local_ch},{remote_ch}): overlap={overlap_sec:.1f}s, "
+                        f"local_n={len(local_overlap)}, remote_n={len(remote_overlap)}, "
+                        f"coincidences={count}, rate={rate:.0f}/s")
+            
+            new_counts.append(rate)
         
         # Update rolling window (shift left, add new value on right)
         for i, count in enumerate(new_counts):
@@ -681,13 +755,15 @@ class PlotUpdater:
         # Plot colors for up to 4 pairs
         colors = ['purple', 'orange', 'brown', 'pink']
         
-        pairs = self.app_ref.correlation_pairs[:4]  # Max 4 pairs
+        pairs = list(self.app_ref.correlation_pairs)[:4]  # Snapshot + max 4 pairs
         role_label = "Client" if self.app_ref.computer_role == "computer_b" else "Server"
         remote_role = "Server" if self.app_ref.computer_role == "computer_b" else "Client"
         
         for idx, (local_in, remote_in) in enumerate(pairs):
+            if idx >= len(data):
+                break
             label = f"{role_label}-{local_in} ↔ {remote_role}-{remote_in}"
-            self.ax.plot(data[idx], color=colors[idx], marker='o', 
+            self.ax.plot(data[idx], color=colors[idx % len(colors)], marker='o', 
                         linestyle='-', linewidth=2, label=label)
         
         self.ax.legend(loc='upper left', fontsize=10)
@@ -708,7 +784,7 @@ class PlotUpdater:
         self.ax.set_title(f'Cross-Site Coincidences | Window: ±{window_ps:,} ps | {current_time}', 
                          fontsize=11, fontweight='bold')
         self.ax.set_xlabel('Time Point (0.5s intervals)')
-        self.ax.set_ylabel('Coincidences' if not self.normalize_plot else 'Normalized')
+        self.ax.set_ylabel('Coincidences/s' if not self.normalize_plot else 'Normalized')
         self.ax.set_xticks(range(0, 20))
         self.ax.grid(True, alpha=0.3)
 
@@ -738,9 +814,12 @@ class PlotUpdater:
     def _loop(self):
         """Main update loop running in background thread."""
         while self.continue_update:
-            self._update_measurements()
-            self._draw_plot()
-            time.sleep(0.5)  # Update every 0.5 seconds (fast enough for human perception)
+            try:
+                self._update_measurements()
+                self._draw_plot()
+            except Exception as e:
+                logger.error(f"Error in plot update loop: {e}", exc_info=True)
+            time.sleep(0.5)
 
     def start_counter_display(self):
         """Start only the counter display loop (singles rates monitoring).

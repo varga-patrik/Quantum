@@ -161,16 +161,12 @@ class PeerConnection:
                 return False
             
             self.secure_channel.set_peer_public_key(msg['public_key'])
-            if DEBUG_MODE:
-                logger.info("Received client public key")
             
             # Step 2: Send our public key
             self._send_raw({
                 'type': 'PUBLIC_KEY',
                 'public_key': self.secure_channel.get_public_key_pem()
             })
-            if DEBUG_MODE:
-                logger.info("Sent server public key")
             
             # Step 3: Generate and send encrypted session key
             _, encrypted_key = self.secure_channel.generate_session_key()
@@ -178,21 +174,15 @@ class PeerConnection:
                 'type': 'SESSION_KEY',
                 'encrypted_key': encrypted_key
             })
-            if DEBUG_MODE:
-                logger.info("Sent encrypted session key")
             
             # Step 3.5: Wait for client acknowledgment that session key was received
             msg = self._receive_raw()
             if not msg or msg.get('type') != 'SESSION_KEY_ACK':
                 logger.error("Did not receive SESSION_KEY_ACK")
                 return False
-            if DEBUG_MODE:
-                logger.info("Received session key acknowledgment")
             
             # Step 4: Authentication challenge
             challenge = self.secure_channel.create_auth_challenge()
-            if DEBUG_MODE:
-                logger.info("Sending authentication challenge")
             self._send_raw({
                 'type': 'AUTH_CHALLENGE',
                 'challenge': challenge
@@ -209,8 +199,6 @@ class PeerConnection:
                 return False
             
             self.encryption_ready = True
-            if DEBUG_MODE:
-                logger.info("Server handshake complete - channel encrypted")
             return True
             
         except Exception as e:
@@ -270,13 +258,9 @@ class PeerConnection:
                 'type': 'AUTH_RESPONSE',
                 'response': response
             })
-            if DEBUG_MODE:
-                logger.info("Authentication response sent")
             
             self.encryption_ready = True
             self.secure_channel.authenticated = True
-            if DEBUG_MODE:
-                logger.info("Client handshake complete - channel encrypted")
             return True
             
         except Exception as e:

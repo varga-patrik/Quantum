@@ -9,10 +9,9 @@ This module handles:
 """
 
 import numpy as np
-import struct
+import threading
 import logging
 from typing import Dict, List, Tuple, Optional
-from collections import deque
 from gui_components.config import DEBUG_MODE
 
 logger = logging.getLogger(__name__)
@@ -20,7 +19,12 @@ logger = logging.getLogger(__name__)
 
 class TimestampBuffer:
     """
-    Manages a circular buffer of timestamps for a single channel.
+    Manages a time-windowed buffer of timestamps for a single channel.
+    
+    Uses pre-allocated numpy arrays with start/end pointers for O(1) amortized
+    appends. Avoids np.concatenate (which copies the entire buffer every call).
+    
+    All public methods are thread-safe via a lock.
     
     Attributes:
         channel: Channel number (1-4)
@@ -28,145 +32,143 @@ class TimestampBuffer:
         max_size: Maximum number of timestamps to keep (safety limit)
     """
     
+    # Extra capacity beyond max_size to reduce compaction frequency
+    _HEADROOM = 2_000_000
+    
     def __init__(self, channel: int, max_duration_sec: float = 1.0, max_size: int = 10_000_000):
         self.channel = channel
         self.max_duration_sec = max_duration_sec
         self.max_size = max_size
+        self._lock = threading.Lock()
         
-        # Store as (timestamp_ps, ref_second) tuples
-        self.timestamps: deque = deque(maxlen=max_size)
+        # Pre-allocate arrays; _start/_end track the valid data window
+        cap = max_size + self._HEADROOM
+        self._ts = np.empty(cap, dtype=np.int64)      # total_ps
+        self._ref = np.empty(cap, dtype=np.uint64)     # ref_second
+        self._start = 0   # index of first valid entry
+        self._end = 0     # index past last valid entry
         
         logger.debug(f"TimestampBuffer created for channel {channel}, "
-                    f"max_duration={max_duration_sec}s, max_size={max_size}")
+                    f"max_duration={max_duration_sec}s, capacity={cap}")
+    
+    def _make_room(self, needed: int):
+        """Ensure space for `needed` more entries. Called with lock held."""
+        if self._end + needed <= len(self._ts):
+            return  # Already have room
+        
+        count = self._end - self._start
+        cap = len(self._ts)
+        
+        # Try compacting first (shift valid data to front)
+        if self._start > 0 and count + needed <= cap:
+            self._ts[:count] = self._ts[self._start:self._end]
+            self._ref[:count] = self._ref[self._start:self._end]
+            self._start = 0
+            self._end = count
+            return
+        
+        # Need a bigger array
+        new_cap = max(cap * 2, count + needed + self._HEADROOM)
+        new_ts = np.empty(new_cap, dtype=np.int64)
+        new_ref = np.empty(new_cap, dtype=np.uint64)
+        if count > 0:
+            new_ts[:count] = self._ts[self._start:self._end]
+            new_ref[:count] = self._ref[self._start:self._end]
+        self._ts = new_ts
+        self._ref = new_ref
+        self._start = 0
+        self._end = count
     
     def add_timestamps(self, binary_data: bytes, with_ref_index: bool = True):
         """
-        Add timestamps from binary data.
-        
-        Args:
-            binary_data: Binary timestamp data from Time Controller
-            with_ref_index: If True, format is [timestamp, refIndex] pairs (uint64, uint64)
-                           If False, format is just timestamp (uint64)
+        Add timestamps from binary data (from file tail or DLT stream).
+        O(n_new) amortized — only copies the new data, not the entire buffer.
         """
         if not binary_data:
             return
         
         if with_ref_index:
-            # Parse as pairs of uint64 (little-endian)
-            num_values = len(binary_data) // 8
-            if num_values % 2 != 0:
-                logger.warning(f"Ch{self.channel}: Odd number of uint64 values, truncating last value")
-                num_values -= 1
-            
-            # Unpack all uint64 values
-            values = struct.unpack(f'<{num_values}Q', binary_data[:num_values * 8])
-            
-            # Group into (timestamp, ref_second) pairs
-            for i in range(0, len(values), 2):
-                ps_in_second = values[i]
-                ref_second = values[i + 1]
-                
-                # Convert to total picoseconds
-                total_ps = ps_in_second + (ref_second * int(1e12))
-                self.timestamps.append((total_ps, ref_second))
+            valid_len = (len(binary_data) // 16) * 16
+            if valid_len == 0:
+                return
+            raw = np.frombuffer(binary_data[:valid_len], dtype=np.uint64).reshape(-1, 2)
+            new_total = raw[:, 0].astype(np.int64) + raw[:, 1].astype(np.int64) * 1_000_000_000_000
+            new_refs = raw[:, 1]
         else:
-            # Just timestamps (uint64)
             num_timestamps = len(binary_data) // 8
-            values = struct.unpack(f'<{num_timestamps}Q', binary_data[:num_timestamps * 8])
-            
-            for ps in values:
-                self.timestamps.append((ps, 0))  # No ref_second info
+            if num_timestamps == 0:
+                return
+            new_total = np.frombuffer(binary_data[:num_timestamps * 8], dtype=np.uint64).astype(np.int64)
+            new_refs = np.zeros(num_timestamps, dtype=np.uint64)
         
-        # Cleanup old timestamps based on time span
-        self._cleanup_old_timestamps()
-        
-        logger.debug(f"Ch{self.channel}: Added timestamps, buffer size now {len(self.timestamps)}")
+        n = len(new_total)
+        with self._lock:
+            self._make_room(n)
+            self._ts[self._end:self._end + n] = new_total
+            self._ref[self._end:self._end + n] = new_refs
+            self._end += n
+            self._cleanup()
     
     def add_timestamps_array(self, timestamps_ps: np.ndarray, ref_seconds: np.ndarray = None):
         """
         Add timestamps from numpy arrays (used for peer-to-peer exchange).
-        
-        Args:
-            timestamps_ps: Array of timestamps in picoseconds
-            ref_seconds: Optional array of reference seconds (if None, uses 0)
         """
         if len(timestamps_ps) == 0:
             return
         
+        new_total = timestamps_ps.astype(np.int64)
         if ref_seconds is None:
-            ref_seconds = np.zeros(len(timestamps_ps), dtype=np.uint64)
+            new_refs = np.zeros(len(new_total), dtype=np.uint64)
+        else:
+            new_refs = ref_seconds.astype(np.uint64)
         
-        # Add each timestamp
-        for ps, ref in zip(timestamps_ps, ref_seconds):
-            self.timestamps.append((int(ps), int(ref)))
-        
-        # Cleanup old timestamps
-        self._cleanup_old_timestamps()
-        
-        logger.debug(f"Ch{self.channel}: Added {len(timestamps_ps)} timestamps from array, buffer size now {len(self.timestamps)}")
+        n = len(new_total)
+        with self._lock:
+            self._make_room(n)
+            self._ts[self._end:self._end + n] = new_total
+            self._ref[self._end:self._end + n] = new_refs
+            self._end += n
+            self._cleanup()
     
-    def _cleanup_old_timestamps(self):
-        """Remove timestamps older than max_duration_sec."""
-        if not self.timestamps:
+    def _cleanup(self):
+        """Remove old timestamps and enforce max_size. Must be called with lock held."""
+        count = self._end - self._start
+        if count == 0:
             return
         
-        # Get the most recent timestamp and ref_second
-        latest_total_ps, latest_ref = self.timestamps[-1]
+        cutoff = self._ts[self._end - 1] - int(self.max_duration_sec * 1e12)
+        valid = self._ts[self._start:self._end]
+        trim = int(np.searchsorted(valid, cutoff, side='left'))
+        self._start += trim
         
-        # Calculate cutoff time
-        # Keep only timestamps within max_duration_sec of the latest timestamp
-        cutoff_ps = latest_total_ps - (self.max_duration_sec * 1e12)
-        
-        # Count how many to remove (for debugging)
-        removed_count = 0
-        
-        # Remove old timestamps from the left
-        # Note: total_ps is monotonically increasing (includes ref_second * 1e12)
-        while self.timestamps and self.timestamps[0][0] < cutoff_ps:
-            self.timestamps.popleft()
-            removed_count += 1
-        
-        if DEBUG_MODE and removed_count > 0:
-            logger.debug(f"Ch{self.channel}: Trimmed {removed_count} old timestamps, buffer size now {len(self.timestamps)}")
+        # Enforce max_size
+        if self._end - self._start > self.max_size:
+            self._start = self._end - self.max_size
     
     def get_timestamps(self) -> np.ndarray:
-        """
-        Get all timestamps as numpy array (in picoseconds).
-        Thread-safe snapshot of current timestamps.
-        
-        Returns:
-            Array of timestamps in picoseconds
-        """
-        if not self.timestamps:
-            return np.array([], dtype=np.uint64)
-        
-        # Create a snapshot to avoid "deque mutated during iteration" error
-        snapshot = list(self.timestamps)
-        return np.array([ts[0] for ts in snapshot], dtype=np.uint64)
+        """Get all timestamps as numpy array (in picoseconds). Thread-safe snapshot."""
+        with self._lock:
+            if self._end <= self._start:
+                return np.array([], dtype=np.int64)
+            return self._ts[self._start:self._end].copy()
     
     def get_timestamps_with_ref(self) -> tuple:
-        """
-        Get timestamps and reference seconds for peer-to-peer transmission.
-        Thread-safe snapshot of current data.
-        
-        Returns:
-            Tuple of (timestamps_array, ref_seconds_array)
-        """
-        if not self.timestamps:
-            return (np.array([], dtype=np.uint64), np.array([], dtype=np.uint64))
-        
-        snapshot = list(self.timestamps)
-        timestamps = np.array([ts[0] for ts in snapshot], dtype=np.uint64)
-        ref_seconds = np.array([ts[1] for ts in snapshot], dtype=np.uint64)
-        return (timestamps, ref_seconds)
+        """Get timestamps and reference seconds. Thread-safe snapshot."""
+        with self._lock:
+            if self._end <= self._start:
+                return (np.array([], dtype=np.int64), np.array([], dtype=np.uint64))
+            return (self._ts[self._start:self._end].copy(),
+                    self._ref[self._start:self._end].copy())
     
     def clear(self):
         """Clear all timestamps from buffer."""
-        self.timestamps.clear()
+        with self._lock:
+            self._start = 0
+            self._end = 0
         logger.debug(f"Ch{self.channel}: Buffer cleared")
     
     def __len__(self):
-        return len(self.timestamps)
+        return max(0, self._end - self._start)
 
 
 class CoincidenceCounter:
@@ -194,16 +196,24 @@ class CoincidenceCounter:
         Count coincidences between local and remote timestamps.
         
         Uses vectorized binary search for O(n log m) performance.
-        Counts all local timestamps that have at least one remote timestamp within the window.
+        For each local timestamp, checks if ANY remote timestamp falls within ±window_ps.
+        
+        A single local timestamp can only be counted ONCE per pair (even if multiple
+        remote timestamps fall within the window). However, across DIFFERENT pairs
+        (e.g., (1,1) and (1,4)), the same local timestamp CAN produce a coincidence
+        in both pairs — this is correct and standard in quantum coincidence counting,
+        since each detector pair is measured independently.
         
         Args:
             local_timestamps: Local timestamps in picoseconds (sorted)
             remote_timestamps: Remote timestamps in picoseconds (sorted)
-            time_offset_ps: Time offset to apply to remote timestamps (from C++ Correlator)
-                           Positive offset means remote is AHEAD, so we SUBTRACT to align.
+            time_offset_ps: Time offset to apply to remote timestamps.
+                           Photons travel FROM BME (local) TO Wigner (remote).
+                           Remote detects LATER → positive offset → we SUBTRACT
+                           from remote to align with local time.
         
         Returns:
-            Number of coincidences found
+            Number of local timestamps that have at least one matching remote timestamp
         """
         if len(local_timestamps) == 0 or len(remote_timestamps) == 0:
             return 0

@@ -1294,9 +1294,9 @@ class App:
 
 def main():
     """Main entry point for the application."""
-    # Configure logging with DEBUG level when DEBUG_MODE is enabled
+    # Always use INFO level logging (DEBUG_MODE only controls explicit if-statements in code)
     from gui_components.config import DEBUG_MODE
-    log_level = logging.DEBUG if DEBUG_MODE else logging.INFO
+    log_level = logging.INFO
     
     logging.basicConfig(
         level=log_level,

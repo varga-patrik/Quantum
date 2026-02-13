@@ -1,4 +1,4 @@
-"""GUI configuration constants and theme settings."""
+"""Settings for the whole program."""
 
 # Debug mode - set to True for extensive logging
 DEBUG_MODE = True  # Set to True to enable detailed diagnostic logs
@@ -23,9 +23,9 @@ DEFAULT_BIN_COUNT = 20
 DEFAULT_HISTOGRAMS = [1, 2, 3, 4]
 
 # Timestamp streaming settings
-COINCIDENCE_WINDOW_PS = 2000  # ±1ns coincidence window in picoseconds (tau)
-TIMESTAMP_BUFFER_DURATION_SEC = 2.0  # Keep 2 seconds of local timestamps (survives reference_second boundary transitions)
-REMOTE_BUFFER_DURATION_SEC = 3.0  # Keep 3 seconds of remote timestamps (handles batch delays & second-boundary cleanups)
+COINCIDENCE_WINDOW_PS = 2000  # coincidence window in picoseconds
+TIMESTAMP_BUFFER_DURATION_SEC = 12.0  # Local buffer: must be longer than network pipeline delay (~6.5s) so old local data can overlap with delayed remote data
+REMOTE_BUFFER_DURATION_SEC = 12.0  # Remote buffer: accumulates multiple batch arrivals (batches arrive every ~6.5s, each covering ~3s)
 TIMESTAMP_BUFFER_MAX_SIZE = 10_000_000  # Max timestamps per channel (safety limit)
 TIMESTAMP_BATCH_INTERVAL_SEC = 0.1  # Send batches to peer every 0.1 seconds (10 Hz)
 STREAM_PORTS_BASE = 4241  # Time Controller streaming ports: 4242, 4243, 4244, 4245
