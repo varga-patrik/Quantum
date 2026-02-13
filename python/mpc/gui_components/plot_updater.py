@@ -590,23 +590,14 @@ class PlotUpdater:
                 logger.error(f"Failed to send counter data to peer: {e}")
     
     def _calculate_coincidences(self):
-        """Calculate coincidences between local and remote timestamps.
+        """Calculate coincidences between channel pairs.
         
-        Uses the CoincidenceCounter to find timestamp pairs within the
-        configured coincidence window. Only compares the overlapping time
-        region between local and remote buffers (after offset adjustment).
+        Pairs are 4-tuples: (src_a, ch_a, src_b, ch_b) where src is "L" or "R".
+        "L" reads from local_buffers, "R" reads from remote_buffers.
+        For local-local pairs (loopback test), offset is forced to 0.
         
-        The local buffer is intentionally large (>network delay) so that
-        old local timestamps are still available when delayed remote data arrives.
-        
-        Buffer snapshots are cached so each channel is only read once,
-        even when multiple pairs reference the same channel.
-        
-        A single local timestamp can match in multiple pairs independently
-        (e.g., local Ch1 can coincide with both remote Ch1 and Ch4).
-        
-        Stores coincidence RATE (count/overlap_sec) instead of raw count,
-        so the plot is stable regardless of when remote data bursts arrive.
+        Buffer snapshots are cached so each channel is only read once.
+        Stores coincidence RATE (count/overlap_sec) for a stable plot.
         """
         if not self.app_ref or not hasattr(self.app_ref, 'correlation_pairs'):
             return
@@ -614,85 +605,84 @@ class PlotUpdater:
         # Get time offset from config (measured by C++ Correlator)
         time_offset_ps = getattr(self.app_ref, 'time_offset_ps', 0) or 0
         
-        # Snapshot the pairs list — the main thread can add/remove pairs at any time,
-        # so we must work on a frozen copy to avoid KeyError in the cache lookup.
+        # Snapshot the pairs list — the main thread can add/remove pairs at any time
         pairs = list(self.app_ref.correlation_pairs)
         
-        # Cache buffer snapshots — read each channel only ONCE
-        local_cache = {}
-        remote_cache = {}
-        for local_ch, remote_ch in pairs:
-            if local_ch not in local_cache and local_ch in self.local_buffers:
-                local_cache[local_ch] = self.local_buffers[local_ch].get_timestamps()
-            if remote_ch not in remote_cache and remote_ch in self.remote_buffers:
-                remote_cache[remote_ch] = self.remote_buffers[remote_ch].get_timestamps()
+        # Cache buffer snapshots — read each (source, channel) combo only ONCE
+        cache = {}  # key: ("L", ch) or ("R", ch) → np.ndarray
+        for src_a, ch_a, src_b, ch_b in pairs:
+            for src, ch in [(src_a, ch_a), (src_b, ch_b)]:
+                if (src, ch) not in cache:
+                    buffers = self.local_buffers if src == "L" else self.remote_buffers
+                    if ch in buffers:
+                        cache[(src, ch)] = buffers[ch].get_timestamps()
         
-        # Log buffer sizes for all relevant channels (helps diagnose empty buffers)
-        buf_summary_parts = []
-        for ch in sorted(set(lc for lc, _ in pairs)):
-            n = len(local_cache.get(ch, []))
-            buf_summary_parts.append(f"L{ch}={n}")
-        for ch in sorted(set(rc for _, rc in pairs)):
-            n = len(remote_cache.get(ch, []))
-            buf_summary_parts.append(f"R{ch}={n}")
-        logger.info(f"  Buffers: {', '.join(buf_summary_parts)}")
+        # Log buffer sizes
+        buf_parts = []
+        for (src, ch), ts in sorted(cache.items()):
+            buf_parts.append(f"{src}{ch}={len(ts)}")
+        if buf_parts:
+            logger.info(f"  Buffers: {', '.join(buf_parts)}")
         
-        # Calculate coincidences for each pair
         new_counts = []
-        for local_ch, remote_ch in pairs:
-            if local_ch not in local_cache or remote_ch not in remote_cache:
-                logger.warning(f"  Pair ({local_ch},{remote_ch}): SKIPPED — channel missing from buffers")
-                new_counts.append(0)
-                continue
-            local_ts = local_cache[local_ch]
-            remote_ts = remote_cache[remote_ch]
+        for src_a, ch_a, src_b, ch_b in pairs:
+            key_a = (src_a, ch_a)
+            key_b = (src_b, ch_b)
             
-            if len(local_ts) == 0 or len(remote_ts) == 0:
-                logger.info(f"  Pair ({local_ch},{remote_ch}): SKIPPED — empty buffer "
-                           f"(local={len(local_ts)}, remote={len(remote_ts)})")
+            if key_a not in cache or key_b not in cache:
+                logger.warning(f"  Pair ({src_a}{ch_a},{src_b}{ch_b}): SKIPPED — channel missing")
                 new_counts.append(0)
                 continue
             
-            # Calculate the overlapping time region between the two buffers
-            # Remote timestamps need offset adjustment for overlap check
-            remote_adjusted_first = int(remote_ts[0]) - time_offset_ps
-            remote_adjusted_last = int(remote_ts[-1]) - time_offset_ps
-            local_first, local_last = int(local_ts[0]), int(local_ts[-1])
+            ts_a = cache[key_a]
+            ts_b = cache[key_b]
             
-            overlap_start = max(local_first, remote_adjusted_first)
-            overlap_end = min(local_last, remote_adjusted_last)
+            if len(ts_a) == 0 or len(ts_b) == 0:
+                logger.info(f"  Pair ({src_a}{ch_a},{src_b}{ch_b}): SKIPPED — empty buffer "
+                           f"(a={len(ts_a)}, b={len(ts_b)})")
+                new_counts.append(0)
+                continue
+            
+            # Use configured offset for all pairs (including local-local for sanity check)
+            pair_offset = time_offset_ps
+            
+            # Calculate overlapping time region
+            b_adjusted_first = int(ts_b[0]) - pair_offset
+            b_adjusted_last = int(ts_b[-1]) - pair_offset
+            a_first, a_last = int(ts_a[0]), int(ts_a[-1])
+            
+            overlap_start = max(a_first, b_adjusted_first)
+            overlap_end = min(a_last, b_adjusted_last)
             overlap_sec = (overlap_end - overlap_start) / 1e12
             
             if overlap_end <= overlap_start:
-                logger.info(f"  Pair ({local_ch},{remote_ch}): NO OVERLAP — "
-                           f"local [{local_first/1e12:.3f}s - {local_last/1e12:.3f}s], "
-                           f"remote_adj [{remote_adjusted_first/1e12:.3f}s - {remote_adjusted_last/1e12:.3f}s]")
+                logger.info(f"  Pair ({src_a}{ch_a},{src_b}{ch_b}): NO OVERLAP — "
+                           f"a [{a_first/1e12:.3f}s - {a_last/1e12:.3f}s], "
+                           f"b_adj [{b_adjusted_first/1e12:.3f}s - {b_adjusted_last/1e12:.3f}s]")
                 new_counts.append(0)
                 continue
             
-            # Trim local timestamps to the overlap region only
-            # Use searchsorted (O(log n)) instead of boolean mask (O(n))
-            l_start = np.searchsorted(local_ts, overlap_start, side='left')
-            l_end = np.searchsorted(local_ts, overlap_end, side='right')
-            local_overlap = local_ts[l_start:l_end]
+            # Trim both to overlap region
+            l_start = np.searchsorted(ts_a, overlap_start, side='left')
+            l_end = np.searchsorted(ts_a, overlap_end, side='right')
+            a_overlap = ts_a[l_start:l_end]
             
-            # Trim remote (adjusted) to the overlap region
-            remote_adj_arr = remote_ts.astype(np.int64) - time_offset_ps
-            r_start = np.searchsorted(remote_adj_arr, overlap_start, side='left')
-            r_end = np.searchsorted(remote_adj_arr, overlap_end, side='right')
-            remote_overlap = remote_ts[r_start:r_end]  # Pass original (unadjusted); counter applies offset
+            b_adj_arr = ts_b.astype(np.int64) - pair_offset
+            r_start = np.searchsorted(b_adj_arr, overlap_start, side='left')
+            r_end = np.searchsorted(b_adj_arr, overlap_end, side='right')
+            b_overlap = ts_b[r_start:r_end]
             
             count = self.coincidence_counter.count_coincidences(
-                local_overlap, remote_overlap, time_offset_ps
+                a_overlap, b_overlap, pair_offset
             )
             
-            # Normalize to coincidence RATE (per second) so the plot doesn't
-            # sawtooth with overlap duration.  Store rate, not raw count.
             rate = count / overlap_sec if overlap_sec > 0.5 else 0
             
-            logger.info(f"  Pair ({local_ch},{remote_ch}): overlap={overlap_sec:.1f}s, "
-                        f"local_n={len(local_overlap)}, remote_n={len(remote_overlap)}, "
-                        f"coincidences={count}, rate={rate:.0f}/s")
+            is_local_pair = (src_a == "L" and src_b == "L")
+            logger.info(f"  Pair ({src_a}{ch_a},{src_b}{ch_b}): overlap={overlap_sec:.1f}s, "
+                        f"a_n={len(a_overlap)}, b_n={len(b_overlap)}, "
+                        f"coincidences={count}, rate={rate:.0f}/s, offset={pair_offset}" +
+                        (" (local-local)" if is_local_pair else " (cross-site)"))
             
             new_counts.append(rate)
         
@@ -712,10 +702,9 @@ class PlotUpdater:
         self.last_coincidence_counts = [0, 0, 0, 0]
 
     def _draw_coincidence_plot(self):
-        """Draw cross-site coincidence time series plot.
+        """Draw coincidence time series plot.
         
-        Only plots meaningful correlations: cross-site coincidences.
-        Single-site correlations are meaningless for entanglement.
+        Supports both cross-site (L vs R) and local-local (L vs L) pairs.
         """
         import datetime
         
@@ -724,45 +713,44 @@ class PlotUpdater:
                         ha='center', va='center', transform=self.ax.transAxes)
             return
         
-        # Check if peer is connected
-        if not self.peer_connection or not self.peer_connection.is_connected():
-            self._clear_cross_site_data()
-            self.ax.text(0.5, 0.5, 'Peer not connected - no cross-site data', 
-                        ha='center', va='center', transform=self.ax.transAxes)
-            return
+        pairs = list(self.app_ref.correlation_pairs)[:4]
         
-        # Check if this is server (Wigner) - it doesn't receive remote timestamps
-        if self.app_ref.computer_role == "computer_a":
-            current_time = datetime.datetime.now().strftime('%H:%M:%S')
-            self.ax.text(0.5, 0.5, 
-                        f'Server Mode (Wigner) - Sending timestamps to BME\n\n'
-                        f'Coincidence detection runs on BME (client) side\n'
-                        f'because BME receives timestamps from both sites.\n\n'
-                        f'Last update: {current_time}',
-                        ha='center', va='center', transform=self.ax.transAxes,
-                        fontsize=11, bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
-            return
+        # Check if any pair uses remote buffers — if so, need peer connection
+        has_remote_pair = any(s == "R" for p in pairs for s in (p[0], p[2]))
+        
+        if has_remote_pair:
+            if not self.peer_connection or not self.peer_connection.is_connected():
+                # Only clear remote data, local-local pairs still work
+                for channel in [1, 2, 3, 4]:
+                    self.remote_buffers[channel].clear()
+            
+            # Check if this is server (Wigner) - it doesn't receive remote timestamps
+            if self.app_ref.computer_role == "computer_a" and has_remote_pair:
+                current_time = datetime.datetime.now().strftime('%H:%M:%S')
+                self.ax.text(0.5, 0.5, 
+                            f'Server Mode (Wigner) - Sending timestamps to BME\n\n'
+                            f'Coincidence detection runs on BME (client) side\n'
+                            f'because BME receives timestamps from both sites.\n\n'
+                            f'Last update: {current_time}',
+                            ha='center', va='center', transform=self.ax.transAxes,
+                            fontsize=11, bbox=dict(boxstyle='round', facecolor='lightyellow', alpha=0.8))
+                return
         
         data = self.coincidence_series.copy()
-        ylim = int(max(1, np.max(data)) / 100) * 100 + 100
         
         if self.normalize_plot:
             col_sum = np.sum(data, axis=0)
             with np.errstate(divide='ignore', invalid='ignore'):
                 data = np.nan_to_num(data / col_sum, nan=0.0, posinf=0.0, neginf=0.0)
-            ylim = 1
         
         # Plot colors for up to 4 pairs
         colors = ['purple', 'orange', 'brown', 'pink']
+        src_name = lambda s: "Local" if s == "L" else "Remote"
         
-        pairs = list(self.app_ref.correlation_pairs)[:4]  # Snapshot + max 4 pairs
-        role_label = "Client" if self.app_ref.computer_role == "computer_b" else "Server"
-        remote_role = "Server" if self.app_ref.computer_role == "computer_b" else "Client"
-        
-        for idx, (local_in, remote_in) in enumerate(pairs):
+        for idx, (src_a, ch_a, src_b, ch_b) in enumerate(pairs):
             if idx >= len(data):
                 break
-            label = f"{role_label}-{local_in} ↔ {remote_role}-{remote_in}"
+            label = f"{src_name(src_a)}-{ch_a} ↔ {src_name(src_b)}-{ch_b}"
             self.ax.plot(data[idx], color=colors[idx % len(colors)], marker='o', 
                         linestyle='-', linewidth=2, label=label)
         
@@ -781,7 +769,7 @@ class PlotUpdater:
         import datetime
         current_time = datetime.datetime.now().strftime('%H:%M:%S')
         window_ps = self.coincidence_counter.window_ps
-        self.ax.set_title(f'Cross-Site Coincidences | Window: ±{window_ps:,} ps | {current_time}', 
+        self.ax.set_title(f'Coincidences | Window: ±{window_ps:,} ps | {current_time}', 
                          fontsize=11, fontweight='bold')
         self.ax.set_xlabel('Time Point (0.5s intervals)')
         self.ax.set_ylabel('Coincidences/s' if not self.normalize_plot else 'Normalized')

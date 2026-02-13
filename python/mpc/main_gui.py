@@ -52,12 +52,13 @@ class App:
         self.connection_status_label = None
         self.computer_role = "computer_a"  # Default role
         
-        # Cross-site correlation pairs (local_input, remote_input)
+        # Correlation pairs: (source_a, ch_a, source_b, ch_b)
+        # source is "L" (local buffer) or "R" (remote buffer)
+        # For cross-site: ("L", 1, "R", 1)  →  local ch1 vs remote ch1
+        # For local loop: ("L", 1, "L", 3)  →  local ch1 vs local ch3
         self.correlation_pairs = [
-            (1, 1),  # Client-1 ↔ Server-1
-            (2, 2),  # Client-2 ↔ Server-2
-            (3, 3),  # Client-3 ↔ Server-3
-            (4, 4),  # Client-4 ↔ Server-4
+            ("L", 1, "L", 3),  # Local-1 ↔ Local-3
+            ("L", 1, "L", 4),  # Local-1 ↔ Local-4
         ]
         
         # Time offset configuration (measured by C++ correlator)
@@ -519,61 +520,67 @@ class App:
         cb_norm.grid(row=1, column=2, sticky="news", pady=4)
 
     def _build_correlation_pair_selector(self):
-        """Build UI for selecting cross-site correlation pairs."""
+        """Build UI for selecting correlation pairs (local-local or local-remote)."""
         selector_frame = tk.Frame(self.tab_plot_left, relief=tk.GROOVE, bd=2, width=500)
         selector_frame.grid(row=2, column=0, sticky="nws", pady=5)
         
-        tk.Label(selector_frame, text="Cross-Site Correlation Pairs:", 
+        tk.Label(selector_frame, text="Correlation Pairs:", 
                 font=('Arial', 10, 'bold'), height=1).grid(
-            row=0, column=0, columnspan=3, sticky="w", padx=5, pady=5
+            row=0, column=0, columnspan=4, sticky="w", padx=5, pady=5
         )
         
         # List of active pairs
-        self.pair_listbox = tk.Listbox(selector_frame, height=6, width=35)
-        self.pair_listbox.grid(row=1, column=0, columnspan=3, sticky="ew", padx=5, pady=5)
+        self.pair_listbox = tk.Listbox(selector_frame, height=6, width=40)
+        self.pair_listbox.grid(row=1, column=0, columnspan=4, sticky="ew", padx=5, pady=5)
         
         # Populate with default pairs
         self._update_pair_listbox()
         
-        # Add pair controls
-        tk.Label(selector_frame, text="Local Input:").grid(row=2, column=0, sticky="e", padx=2)
-        self.local_input_var = tk.StringVar(value="1")
-        local_combo = ttk.Combobox(selector_frame, values=["1", "2", "3", "4"], 
-                                   width=5, state="readonly", textvariable=self.local_input_var)
-        local_combo.grid(row=2, column=1, sticky="w", padx=2)
+        # Add pair controls — Source A
+        tk.Label(selector_frame, text="A:").grid(row=2, column=0, sticky="e", padx=2)
+        self.pair_src_a_var = tk.StringVar(value="L")
+        ttk.Combobox(selector_frame, values=["L", "R"], width=3, state="readonly",
+                     textvariable=self.pair_src_a_var).grid(row=2, column=1, sticky="w", padx=1)
+        self.pair_ch_a_var = tk.StringVar(value="1")
+        ttk.Combobox(selector_frame, values=["1", "2", "3", "4"], width=3, state="readonly",
+                     textvariable=self.pair_ch_a_var).grid(row=2, column=2, sticky="w", padx=1)
         
-        tk.Label(selector_frame, text="Remote Input:").grid(row=3, column=0, sticky="e", padx=2)
-        self.remote_input_var = tk.StringVar(value="1")
-        remote_combo = ttk.Combobox(selector_frame, values=["1", "2", "3", "4"], 
-                                    width=5, state="readonly", textvariable=self.remote_input_var)
-        remote_combo.grid(row=3, column=1, sticky="w", padx=2)
+        # Source B
+        tk.Label(selector_frame, text="B:").grid(row=3, column=0, sticky="e", padx=2)
+        self.pair_src_b_var = tk.StringVar(value="L")
+        ttk.Combobox(selector_frame, values=["L", "R"], width=3, state="readonly",
+                     textvariable=self.pair_src_b_var).grid(row=3, column=1, sticky="w", padx=1)
+        self.pair_ch_b_var = tk.StringVar(value="3")
+        ttk.Combobox(selector_frame, values=["1", "2", "3", "4"], width=3, state="readonly",
+                     textvariable=self.pair_ch_b_var).grid(row=3, column=2, sticky="w", padx=1)
         
         # Add/Remove buttons
         tk.Button(selector_frame, text="+ Add Pair", background='#4CAF50', width=12,
-                 command=self._add_correlation_pair).grid(row=2, column=2, padx=5)
+                 command=self._add_correlation_pair).grid(row=2, column=3, padx=5)
         
         tk.Button(selector_frame, text="- Remove Selected", background='#FF5722', width=12,
-                 command=self._remove_correlation_pair).grid(row=3, column=2, padx=5)
+                 command=self._remove_correlation_pair).grid(row=3, column=3, padx=5)
     
     def _update_pair_listbox(self):
         """Update the correlation pair listbox display."""
         self.pair_listbox.delete(0, tk.END)
-        for local_in, remote_in in self.correlation_pairs:
-            role_label = "Client" if self.computer_role == "computer_b" else "Server"
-            remote_role = "Server" if self.computer_role == "computer_b" else "Client"
-            self.pair_listbox.insert(tk.END, f"{role_label}-{local_in} ↔ {remote_role}-{remote_in}")
+        src_name = lambda s: "Local" if s == "L" else "Remote"
+        for src_a, ch_a, src_b, ch_b in self.correlation_pairs:
+            self.pair_listbox.insert(tk.END, f"{src_name(src_a)}-{ch_a} ↔ {src_name(src_b)}-{ch_b}")
     
     def _add_correlation_pair(self):
         """Add a new correlation pair."""
         try:
-            local_in = int(self.local_input_var.get())
-            remote_in = int(self.remote_input_var.get())
+            src_a = self.pair_src_a_var.get()
+            ch_a = int(self.pair_ch_a_var.get())
+            src_b = self.pair_src_b_var.get()
+            ch_b = int(self.pair_ch_b_var.get())
             
-            pair = (local_in, remote_in)
+            pair = (src_a, ch_a, src_b, ch_b)
             if pair not in self.correlation_pairs:
                 self.correlation_pairs.append(pair)
                 self._update_pair_listbox()
-                logger.info("Added correlation pair: Local-%d ↔ Remote-%d", local_in, remote_in)
+                logger.info("Added correlation pair: %s-%d ↔ %s-%d", src_a, ch_a, src_b, ch_b)
         except Exception as e:
             logger.error("Error adding correlation pair: %s", e)
     
