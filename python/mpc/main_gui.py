@@ -35,7 +35,26 @@ logger = logging.getLogger(__name__)
 
 class App:
     """Main application class for the GUI."""
-    
+
+    # Backward-compat aliases — other tabs read/write time_offset_ps
+    @property
+    def time_offset_ps(self):
+        return self.time_offsets_ps[0] if hasattr(self, 'time_offsets_ps') else None
+
+    @time_offset_ps.setter
+    def time_offset_ps(self, value):
+        if hasattr(self, 'time_offsets_ps'):
+            self.time_offsets_ps[0] = value
+
+    @property
+    def time_offset_updated(self):
+        return self.time_offsets_updated[0] if hasattr(self, 'time_offsets_updated') else None
+
+    @time_offset_updated.setter
+    def time_offset_updated(self, value):
+        if hasattr(self, 'time_offsets_updated'):
+            self.time_offsets_updated[0] = value
+
     def __init__(self, root):
         self.root = root
         self.root.title("Eszköz optimalizáló")
@@ -52,18 +71,20 @@ class App:
         self.connection_status_label = None
         self.computer_role = "computer_a"  # Default role
         
-        # Correlation pairs: (source_a, ch_a, source_b, ch_b)
+        # Correlation pairs: (source_a, ch_a, source_b, ch_b, offset_idx)
         # source is "L" (local buffer) or "R" (remote buffer)
-        # For cross-site: ("L", 1, "R", 1)  →  local ch1 vs remote ch1
-        # For local loop: ("L", 1, "L", 3)  →  local ch1 vs local ch3
+        # offset_idx is 0..3 (which of the four offsets to use)
+        # For cross-site: ("L", 1, "R", 1, 0)  →  local ch1 vs remote ch1, offset 1
+        # For local loop: ("L", 1, "L", 3, 0)  →  local ch1 vs local ch3, offset 1
         self.correlation_pairs = [
-            ("L", 1, "L", 3),  # Local-1 ↔ Local-3
-            ("L", 1, "L", 4),  # Local-1 ↔ Local-4
+            ("L", 1, "L", 3, 0),  # Local-1 ↔ Local-3, Offset 1
+            ("L", 1, "L", 4, 1),  # Local-1 ↔ Local-4, Offset 2
         ]
         
         # Time offset configuration (measured by C++ correlator)
-        self.time_offset_ps = None  # Time offset in picoseconds
-        self.time_offset_updated = None  # Last update timestamp
+        # Four independent offsets — each correlation pair selects which to use
+        self.time_offsets_ps = [None, None, None, None]
+        self.time_offsets_updated = [None, None, None, None]
         self._load_time_offset()
         
         # Show connection dialog
@@ -160,32 +181,43 @@ class App:
         return os.path.join(script_dir, 'time_offset_config.json')
     
     def _load_time_offset(self):
-        """Load time offset from configuration file."""
+        """Load time offsets from configuration file."""
         try:
             config_path = self._get_config_path()
             if os.path.exists(config_path):
                 with open(config_path, 'r') as f:
                     data = json.load(f)
-                    self.time_offset_ps = data.get('offset_ps')
-                    self.time_offset_updated = data.get('updated')
-                    logger.info("Loaded time offset: %s ps (updated: %s)", 
-                               self.time_offset_ps, self.time_offset_updated)
+                    # Support both old single-offset and new multi-offset format
+                    if 'offsets' in data:
+                        for i, ofs in enumerate(data['offsets'][:4]):
+                            self.time_offsets_ps[i] = ofs.get('offset_ps')
+                            self.time_offsets_updated[i] = ofs.get('updated')
+                    else:
+                        # Old format: {"offset_ps": ..., "updated": ...}
+                        self.time_offsets_ps[0] = data.get('offset_ps')
+                        self.time_offsets_updated[0] = data.get('updated')
+                    logger.info("Loaded time offsets: %s ps", self.time_offsets_ps)
         except Exception as e:
             logger.error("Failed to load time offset configuration: %s", e)
-            self.time_offset_ps = None
-            self.time_offset_updated = None
+            self.time_offsets_ps = [None, None, None, None]
+            self.time_offsets_updated = [None, None, None, None]
     
     def _save_time_offset(self):
-        """Save time offset to configuration file."""
+        """Save time offsets to configuration file."""
         try:
             config_path = self._get_config_path()
             data = {
-                'offset_ps': self.time_offset_ps,
-                'updated': self.time_offset_updated
+                'offsets': [
+                    {'offset_ps': self.time_offsets_ps[i], 'updated': self.time_offsets_updated[i]}
+                    for i in range(4)
+                ],
+                # Backward compat: keep top-level fields as offset 1
+                'offset_ps': self.time_offsets_ps[0],
+                'updated': self.time_offsets_updated[0]
             }
             with open(config_path, 'w') as f:
                 json.dump(data, f, indent=2)
-            logger.info("Saved time offset: %s ps", self.time_offset_ps)
+            logger.info("Saved time offsets: %s ps", self.time_offsets_ps)
         except Exception as e:
             logger.error("Failed to save time offset configuration: %s", e)
     
@@ -538,8 +570,8 @@ class App:
         
         # Add pair controls — Source A
         tk.Label(selector_frame, text="A:").grid(row=2, column=0, sticky="e", padx=2)
-        self.pair_src_a_var = tk.StringVar(value="L")
-        ttk.Combobox(selector_frame, values=["L", "R"], width=3, state="readonly",
+        self.pair_src_a_var = tk.StringVar(value="Local")
+        ttk.Combobox(selector_frame, values=["Local", "Remote"], width=8, state="readonly",
                      textvariable=self.pair_src_a_var).grid(row=2, column=1, sticky="w", padx=1)
         self.pair_ch_a_var = tk.StringVar(value="1")
         ttk.Combobox(selector_frame, values=["1", "2", "3", "4"], width=3, state="readonly",
@@ -547,12 +579,18 @@ class App:
         
         # Source B
         tk.Label(selector_frame, text="B:").grid(row=3, column=0, sticky="e", padx=2)
-        self.pair_src_b_var = tk.StringVar(value="L")
-        ttk.Combobox(selector_frame, values=["L", "R"], width=3, state="readonly",
+        self.pair_src_b_var = tk.StringVar(value="Remote")
+        ttk.Combobox(selector_frame, values=["Local", "Remote"], width=8, state="readonly",
                      textvariable=self.pair_src_b_var).grid(row=3, column=1, sticky="w", padx=1)
         self.pair_ch_b_var = tk.StringVar(value="3")
         ttk.Combobox(selector_frame, values=["1", "2", "3", "4"], width=3, state="readonly",
                      textvariable=self.pair_ch_b_var).grid(row=3, column=2, sticky="w", padx=1)
+        
+        # Offset selector
+        tk.Label(selector_frame, text="Offset:").grid(row=4, column=0, sticky="e", padx=2)
+        self.pair_offset_var = tk.StringVar(value="1")
+        ttk.Combobox(selector_frame, values=["1", "2", "3", "4"], width=3, state="readonly",
+                     textvariable=self.pair_offset_var).grid(row=4, column=1, sticky="w", padx=1)
         
         # Add/Remove buttons
         tk.Button(selector_frame, text="+ Add Pair", background='#4CAF50', width=12,
@@ -565,22 +603,26 @@ class App:
         """Update the correlation pair listbox display."""
         self.pair_listbox.delete(0, tk.END)
         src_name = lambda s: "Local" if s == "L" else "Remote"
-        for src_a, ch_a, src_b, ch_b in self.correlation_pairs:
-            self.pair_listbox.insert(tk.END, f"{src_name(src_a)}-{ch_a} ↔ {src_name(src_b)}-{ch_b}")
+        for src_a, ch_a, src_b, ch_b, ofs_idx in self.correlation_pairs:
+            self.pair_listbox.insert(tk.END,
+                f"{src_name(src_a)}-{ch_a} ↔ {src_name(src_b)}-{ch_b}  [Offset {ofs_idx + 1}]")
     
     def _add_correlation_pair(self):
         """Add a new correlation pair."""
         try:
-            src_a = self.pair_src_a_var.get()
+            # Convert UI display names to internal codes
+            src_a = "L" if self.pair_src_a_var.get() == "Local" else "R"
             ch_a = int(self.pair_ch_a_var.get())
-            src_b = self.pair_src_b_var.get()
+            src_b = "L" if self.pair_src_b_var.get() == "Local" else "R"
             ch_b = int(self.pair_ch_b_var.get())
+            ofs_idx = int(self.pair_offset_var.get()) - 1  # UI shows 1/2/3/4, store as 0/1/2/3
             
-            pair = (src_a, ch_a, src_b, ch_b)
+            pair = (src_a, ch_a, src_b, ch_b, ofs_idx)
             if pair not in self.correlation_pairs:
                 self.correlation_pairs.append(pair)
                 self._update_pair_listbox()
-                logger.info("Added correlation pair: %s-%d ↔ %s-%d", src_a, ch_a, src_b, ch_b)
+                logger.info("Added correlation pair: %s-%d ↔ %s-%d [Offset %d]", 
+                           src_a, ch_a, src_b, ch_b, ofs_idx + 1)
         except Exception as e:
             logger.error("Error adding correlation pair: %s", e)
     
@@ -597,99 +639,99 @@ class App:
             logger.error("Error removing correlation pair: %s", e)
     
     def _build_time_offset_config(self):
-        """Build time offset configuration section."""
-        # Time offset frame (matches C++ Correlator measured offset)
-        offset_frame = tk.LabelFrame(self.tab_plot_left, text="Time Offset Configuration (LOCAL - C++ Correlator)", 
+        """Build time offset configuration section with four offset slots."""
+        offset_frame = tk.LabelFrame(self.tab_plot_left, text="Time Offsets (ps)", 
                                      font=('Arial', 10, 'bold'),
                                      relief=tk.GROOVE, bd=2, padx=10, pady=8)
         offset_frame.grid(row=3, column=0, sticky="ew", padx=5, pady=5)
         
         # Info label
-        info_label = tk.Label(offset_frame, 
-                             text="LOCAL CONFIG: Enter time offset measured by C++ Correlator at THIS site (picoseconds):",
-                             font=('Arial', 9))
-        info_label.grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 5))
+        tk.Label(offset_frame, 
+                 text="Each correlation pair selects which offset to use:",
+                 font=('Arial', 9)).grid(row=0, column=0, columnspan=5, sticky="w", pady=(0, 5))
         
-        # Input field
-        tk.Label(offset_frame, text="Offset (ps):", font=('Arial', 9, 'bold')).grid(row=1, column=0, sticky="e", padx=5)
-        self.offset_entry = tk.Entry(offset_frame, width=20, font=('Courier New', 10))
-        self.offset_entry.grid(row=1, column=1, sticky="w", padx=5)
+        self.offset_entries = []
+        self.offset_status_labels = []
         
-        # Set current value if exists
-        if self.time_offset_ps is not None:
-            self.offset_entry.insert(0, str(self.time_offset_ps))
+        for i in range(4):
+            row_base = 1 + i * 2  # rows 1,2 / 3,4 / 5,6 / 7,8
+            
+            # Label + Entry
+            tk.Label(offset_frame, text=f"Offset {i+1} (ps):", 
+                    font=('Arial', 9, 'bold')).grid(row=row_base, column=0, sticky="e", padx=5)
+            entry = tk.Entry(offset_frame, width=20, font=('Courier New', 10))
+            entry.grid(row=row_base, column=1, sticky="w", padx=5)
+            self.offset_entries.append(entry)
+            
+            # Pre-fill current value
+            if self.time_offsets_ps[i] is not None:
+                entry.insert(0, str(self.time_offsets_ps[i]))
+            
+            # Save button
+            idx = i  # capture for lambda
+            tk.Button(offset_frame, text=f"💾 Save", 
+                     background='#2196F3', foreground='white',
+                     font=('Arial', 9, 'bold'), width=8,
+                     command=lambda idx=idx: self._save_time_offset_ui(idx)
+            ).grid(row=row_base, column=2, padx=3)
+            
+            # Clear button
+            tk.Button(offset_frame, text="🗑️", 
+                     background='#FF9800', foreground='white',
+                     font=('Arial', 9, 'bold'), width=4,
+                     command=lambda idx=idx: self._clear_time_offset_ui(idx)
+            ).grid(row=row_base, column=3, padx=3)
+            
+            # Status label on next row
+            status_lbl = tk.Label(offset_frame, text="", font=('Arial', 8),
+                                  foreground='#555')
+            status_lbl.grid(row=row_base + 1, column=0, columnspan=5, sticky="w", padx=25, pady=(0, 4))
+            self.offset_status_labels.append(status_lbl)
         
-        # Save button
-        save_btn = tk.Button(offset_frame, text="💾 Save Offset", 
-                            background='#2196F3', foreground='white',
-                            font=('Arial', 9, 'bold'),
-                            width=12, command=self._save_time_offset_ui)
-        save_btn.grid(row=1, column=2, padx=5)
-        
-        # Clear button
-        clear_btn = tk.Button(offset_frame, text="🗑️ Clear", 
-                             background='#FF9800', foreground='white',
-                             font=('Arial', 9, 'bold'),
-                             width=8, command=self._clear_time_offset_ui)
-        clear_btn.grid(row=1, column=3, padx=5)
-        
-        # Status display
-        status_frame = tk.Frame(offset_frame, background='#F5F5F5', relief=tk.SUNKEN, bd=1)
-        status_frame.grid(row=2, column=0, columnspan=4, sticky="ew", pady=(8, 0))
-        
-        tk.Label(status_frame, text="Current Status:", font=('Arial', 8, 'bold'),
-                background='#F5F5F5').grid(row=0, column=0, sticky="w", padx=5, pady=2)
-        
-        self.offset_status_label = tk.Label(status_frame, text="", font=('Arial', 8),
-                                            background='#F5F5F5', foreground='#555')
-        self.offset_status_label.grid(row=0, column=1, sticky="w", padx=5, pady=2)
-        
-        # Update status display
+        # Update all status displays
         self._update_time_offset_status()
     
-    def _save_time_offset_ui(self):
-        """Save time offset from UI input."""
+    def _save_time_offset_ui(self, idx=0):
+        """Save time offset from UI input for the given slot (0-3)."""
         try:
-            value = self.offset_entry.get().strip()
+            value = self.offset_entries[idx].get().strip()
             if not value:
-                logger.warning("No time offset value entered")
+                logger.warning("No time offset value entered for offset %d", idx + 1)
                 return
             
-            # Parse and validate
-            offset_ps = int(float(value))  # Convert to int (picoseconds)
+            offset_ps = int(float(value))
             
-            # Save to memory and file
-            self.time_offset_ps = offset_ps
-            self.time_offset_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self.time_offsets_ps[idx] = offset_ps
+            self.time_offsets_updated[idx] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             self._save_time_offset()
-            
-            # Update status display
             self._update_time_offset_status()
             
-            logger.info("Time offset saved: %d ps (at %s)", offset_ps, self.time_offset_updated)
+            logger.info("Offset %d saved: %d ps", idx + 1, offset_ps)
             
         except ValueError as e:
             logger.error("Invalid time offset value: %s", e)
     
-    def _clear_time_offset_ui(self):
-        """Clear time offset configuration."""
-        self.time_offset_ps = None
-        self.time_offset_updated = None
+    def _clear_time_offset_ui(self, idx=0):
+        """Clear time offset for the given slot (0-3)."""
+        self.time_offsets_ps[idx] = None
+        self.time_offsets_updated[idx] = None
         self._save_time_offset()
-        self.offset_entry.delete(0, tk.END)
+        self.offset_entries[idx].delete(0, tk.END)
         self._update_time_offset_status()
-        logger.info("Time offset cleared")
+        logger.info("Offset %d cleared", idx + 1)
     
     def _update_time_offset_status(self):
-        """Update the time offset status display."""
-        if self.time_offset_ps is not None and self.time_offset_updated:
-            # Format large numbers with thousands separator
-            formatted_offset = format_number(self.time_offset_ps)
-            status_text = f"✅ Offset: {formatted_offset} ps | Updated: {self.time_offset_updated}"
-            self.offset_status_label.config(text=status_text, foreground='#2E7D32')
-        else:
-            status_text = "⚠️ No offset configured"
-            self.offset_status_label.config(text=status_text, foreground='#F57C00')
+        """Update the time offset status display for all slots."""
+        for i in range(4):
+            if not hasattr(self, 'offset_status_labels'):
+                return
+            if self.time_offsets_ps[i] is not None and self.time_offsets_updated[i]:
+                formatted = format_number(self.time_offsets_ps[i])
+                text = f"✅ Offset {i+1}: {formatted} ps | Updated: {self.time_offsets_updated[i]}"
+                self.offset_status_labels[i].config(text=text, foreground='#2E7D32')
+            else:
+                self.offset_status_labels[i].config(text=f"⚠️ Offset {i+1} not configured", 
+                                                     foreground='#F57C00')
 
     def _build_live_counters(self):
         """Build live detector counter display for local and remote."""

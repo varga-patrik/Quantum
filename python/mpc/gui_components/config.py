@@ -8,7 +8,8 @@ SERVER_TC_ADDRESS = "148.6.27.28"
 SERVER_FS740_ADDRESS = "148.6.27.165"
 
 # Hardware IP addresses for CLIENT side (BME)
-CLIENT_TC_ADDRESS = "169.254.104.112"
+#CLIENT_TC_ADDRESS = "169.254.104.112"
+CLIENT_TC_ADDRESS = "172.26.34.114"
 CLIENT_FS740_ADDRESS = "172.26.34.159" 
 
 # Default fallback addresses (used if role not set)
@@ -23,7 +24,7 @@ DEFAULT_BIN_COUNT = 20
 DEFAULT_HISTOGRAMS = [1, 2, 3, 4]
 
 # Timestamp streaming settings
-COINCIDENCE_WINDOW_PS = 8000  # coincidence window in picoseconds
+COINCIDENCE_WINDOW_PS = 10000  # coincidence window in picoseconds
 TIMESTAMP_BUFFER_DURATION_SEC = 12.0  # Local buffer: must be longer than network pipeline delay (~6.5s) so old local data can overlap with delayed remote data
 REMOTE_BUFFER_DURATION_SEC = 12.0  # Remote buffer: accumulates multiple batch arrivals (batches arrive every ~6.5s, each covering ~3s)
 TIMESTAMP_BUFFER_MAX_SIZE = 10_000_000  # Max timestamps per channel (safety limit)

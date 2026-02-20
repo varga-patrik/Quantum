@@ -299,6 +299,12 @@ class TimeOffsetTab:
         action_row = tk.Frame(results_frame, background='#E8EAF6')
         action_row.pack(pady=(5, 0))
         
+        # Offset slot selector for saving
+        tk.Label(action_row, text="Save to:", font=('Arial', 9)).pack(side=tk.LEFT, padx=(0, 2))
+        self.save_offset_slot_var = tk.StringVar(value="1")
+        ttk.Combobox(action_row, values=["1", "2", "3", "4"], width=3, state="readonly",
+                     textvariable=self.save_offset_slot_var).pack(side=tk.LEFT, padx=(0, 5))
+        
         self.save_button = tk.Button(action_row, text="💾 Save Config",
                                      command=self._save_to_config,
                                      background='#4CAF50', foreground='white',
@@ -649,28 +655,36 @@ class TimeOffsetTab:
         canvas.draw()
     
     def _save_to_config(self):
-        """Save calculated offset to config file."""
+        """Save calculated offset to the selected offset slot."""
         if not self.last_result or not self.last_result['success']:
             return
         
-        # Update main app's time offset
-        self.app_ref.time_offset_ps = self.last_result['offset_ps']
-        self.app_ref.time_offset_updated = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # Get target slot (0-based)
+        slot_idx = int(self.save_offset_slot_var.get()) - 1
+        
+        # Update the selected offset slot
+        self.app_ref.time_offsets_ps[slot_idx] = self.last_result['offset_ps']
+        self.app_ref.time_offsets_updated[slot_idx] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
         # Save to file
         self.app_ref._save_time_offset()
         
-        # Update the time offset tab display in main GUI
+        # Update the time offset display in main GUI
         if hasattr(self.app_ref, '_update_time_offset_status'):
             self.app_ref._update_time_offset_status()
         
-        messagebox.showinfo("Saved", 
-                           f"Time offset saved to config:\n\n"
-                           f"{self.last_result['offset_ps']:,} ps\n"
-                           f"({self.last_result['offset_ms']:.3f} ms)\n\n"
-                           f"This will be used for future coincidence calculations.")
+        # Also refresh the entry field in main GUI if it exists
+        if hasattr(self.app_ref, 'offset_entries') and slot_idx < len(self.app_ref.offset_entries):
+            entry = self.app_ref.offset_entries[slot_idx]
+            entry.delete(0, 'end')
+            entry.insert(0, str(self.last_result['offset_ps']))
         
-        logger.info(f"Time offset saved to config: {self.last_result['offset_ps']} ps")
+        messagebox.showinfo("Saved", 
+                           f"Time offset saved to Offset {slot_idx + 1}:\n\n"
+                           f"{self.last_result['offset_ps']:,} ps\n"
+                           f"({self.last_result['offset_ms']:.3f} ms)")
+        
+        logger.info(f"Time offset saved to slot {slot_idx + 1}: {self.last_result['offset_ps']} ps")
     
     def _copy_to_clipboard(self):
         """Copy offset value to clipboard."""

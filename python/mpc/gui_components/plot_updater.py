@@ -592,9 +592,9 @@ class PlotUpdater:
     def _calculate_coincidences(self):
         """Calculate coincidences between channel pairs.
         
-        Pairs are 4-tuples: (src_a, ch_a, src_b, ch_b) where src is "L" or "R".
+        Pairs are 5-tuples: (src_a, ch_a, src_b, ch_b, offset_idx) where src is "L" or "R".
         "L" reads from local_buffers, "R" reads from remote_buffers.
-        For local-local pairs (loopback test), offset is forced to 0.
+        offset_idx selects which of the two configured offsets to apply.
         
         Buffer snapshots are cached so each channel is only read once.
         Stores coincidence RATE (count/overlap_sec) for a stable plot.
@@ -602,15 +602,16 @@ class PlotUpdater:
         if not self.app_ref or not hasattr(self.app_ref, 'correlation_pairs'):
             return
         
-        # Get time offset from config (measured by C++ Correlator)
-        time_offset_ps = getattr(self.app_ref, 'time_offset_ps', 0) or 0
+        # Get time offsets from config (two independent offsets)
+        time_offsets_ps = getattr(self.app_ref, 'time_offsets_ps', [0, 0])
+        time_offsets_ps = [v or 0 for v in (time_offsets_ps or [0, 0])]
         
         # Snapshot the pairs list — the main thread can add/remove pairs at any time
         pairs = list(self.app_ref.correlation_pairs)
         
         # Cache buffer snapshots — read each (source, channel) combo only ONCE
         cache = {}  # key: ("L", ch) or ("R", ch) → np.ndarray
-        for src_a, ch_a, src_b, ch_b in pairs:
+        for src_a, ch_a, src_b, ch_b, _ofs_idx in pairs:
             for src, ch in [(src_a, ch_a), (src_b, ch_b)]:
                 if (src, ch) not in cache:
                     buffers = self.local_buffers if src == "L" else self.remote_buffers
@@ -625,7 +626,7 @@ class PlotUpdater:
             logger.info(f"  Buffers: {', '.join(buf_parts)}")
         
         new_counts = []
-        for src_a, ch_a, src_b, ch_b in pairs:
+        for src_a, ch_a, src_b, ch_b, ofs_idx in pairs:
             key_a = (src_a, ch_a)
             key_b = (src_b, ch_b)
             
@@ -643,8 +644,8 @@ class PlotUpdater:
                 new_counts.append(0)
                 continue
             
-            # Use configured offset for all pairs (including local-local for sanity check)
-            pair_offset = time_offset_ps
+            # Use the offset selected for this pair (0 or 1)
+            pair_offset = time_offsets_ps[ofs_idx] if ofs_idx < len(time_offsets_ps) else 0
             
             # Calculate overlapping time region
             b_adjusted_first = int(ts_b[0]) - pair_offset
@@ -681,7 +682,8 @@ class PlotUpdater:
             is_local_pair = (src_a == "L" and src_b == "L")
             logger.info(f"  Pair ({src_a}{ch_a},{src_b}{ch_b}): overlap={overlap_sec:.1f}s, "
                         f"a_n={len(a_overlap)}, b_n={len(b_overlap)}, "
-                        f"coincidences={count}, rate={rate:.0f}/s, offset={pair_offset}" +
+                        f"coincidences={count}, rate={rate:.0f}/s, "
+                        f"offset[{ofs_idx+1}]={pair_offset}" +
                         (" (local-local)" if is_local_pair else " (cross-site)"))
             
             new_counts.append(rate)
@@ -747,10 +749,10 @@ class PlotUpdater:
         colors = ['purple', 'orange', 'brown', 'pink']
         src_name = lambda s: "Local" if s == "L" else "Remote"
         
-        for idx, (src_a, ch_a, src_b, ch_b) in enumerate(pairs):
+        for idx, (src_a, ch_a, src_b, ch_b, ofs_idx) in enumerate(pairs):
             if idx >= len(data):
                 break
-            label = f"{src_name(src_a)}-{ch_a} ↔ {src_name(src_b)}-{ch_b}"
+            label = f"{src_name(src_a)}-{ch_a} ↔ {src_name(src_b)}-{ch_b} [Ofs{ofs_idx+1}]"
             self.ax.plot(data[idx], color=colors[idx % len(colors)], marker='o', 
                         linestyle='-', linewidth=2, label=label)
         
