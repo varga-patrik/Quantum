@@ -2,6 +2,7 @@
 
 import logging
 import base64
+import threading
 from pathlib import Path
 from typing import Optional, Callable
 import time
@@ -9,8 +10,10 @@ import time
 logger = logging.getLogger(__name__)
 
 # File transfer settings
-CHUNK_SIZE = 256 * 1024  # 256 KB chunks for reliable transfer
-CHUNK_DELAY_MS = 10  # Small delay between chunks to avoid flooding
+CHUNK_SIZE = 64 * 1024  # 64 KB chunks — smaller to reduce per-message overhead after base64 + encryption
+CHUNK_DELAY_MS = 30  # Delay between chunks (ms) as baseline throttle
+ACK_BATCH_SIZE = 5  # Receiver sends ACK every N chunks; sender waits for it
+ACK_TIMEOUT_SEC = 60  # Seconds to wait for a chunk-batch ACK before aborting
 
 
 class FileTransferManager:
@@ -35,6 +38,10 @@ class FileTransferManager:
         
         # Track incoming file chunks
         self.incoming_files = {}  # transfer_id -> {'filename', 'channel', 'total_chunks', 'chunks', 'size'}
+        
+        # ACK-based flow control
+        self._chunk_ack_event = threading.Event()
+        self._send_thread: Optional[threading.Thread] = None
         
         logger.info(f"FileTransferManager initialized, remote dir: {self.remote_dir}")
     
@@ -70,9 +77,28 @@ class FileTransferManager:
             return False
     
     def handle_transfer_request(self, data: dict):
-        """Handle file transfer request from peer - send our saved timestamp files."""
+        """Handle file transfer request from peer — launch sending in a background thread.
+        
+        Running in a background thread is critical: this handler is called from
+        the PeerConnection receiver thread.  If we block it with a long send
+        loop, heartbeats cannot be processed and the connection times out.
+        """
+        if self._send_thread and self._send_thread.is_alive():
+            logger.warning("File transfer already in progress — ignoring request")
+            return
+        
+        self._send_thread = threading.Thread(
+            target=self._send_files_background,
+            args=(data,),
+            daemon=True,
+            name="file-transfer-sender"
+        )
+        self._send_thread.start()
+    
+    def _send_files_background(self, data: dict):
+        """Background thread: gather and send all saved timestamp files."""
         try:
-            logger.info("Received FILE_TRANSFER_REQUEST from peer")
+            logger.info("Received FILE_TRANSFER_REQUEST from peer — starting background send")
             
             # Get list of saved files from plot_updater
             if not self.plot_updater:
@@ -91,12 +117,9 @@ class FileTransferManager:
             for channel, acq_info in saved_files.items():
                 if not isinstance(acq_info, dict):
                     continue
-                
-                # Skip temporary files
                 if acq_info.get('is_temp', False):
                     logger.debug(f"Skipping temp file for channel {channel}")
                     continue
-                    
                 filepath = acq_info.get('filepath')
                 if filepath and Path(filepath).exists():
                     files_to_send[channel] = filepath
@@ -106,22 +129,20 @@ class FileTransferManager:
                 self._send_transfer_complete(False, "No saved files available")
                 return
             
-            # Send each file in chunks
+            # Send each file in chunks with flow control
             files_sent = 0
             for channel, filepath in files_to_send.items():
-                # Add delay between files to allow receiver to process
+                # Pause between files so the receiver can flush to disk
                 if files_sent > 0:
-                    logger.info("Waiting 500ms before next file for flow control...")
-                    time.sleep(0.5)  # 500ms delay between files
+                    logger.info("Waiting 1 s before next file for flow control...")
+                    time.sleep(1.0)
                 
                 logger.info(f"Sending file: {filepath}")
                 try:
-                    # Skip empty files
                     file_size = Path(filepath).stat().st_size
                     if file_size == 0:
                         logger.warning(f"Skipping empty file for channel {channel}: {filepath}")
                         continue
-                    
                     if self._send_file_chunked(channel, Path(filepath)):
                         files_sent += 1
                     else:
@@ -129,28 +150,26 @@ class FileTransferManager:
                 except Exception as e:
                     logger.error(f"Error sending file for channel {channel}: {e}")
             
-            # Send completion message
             self._send_transfer_complete(files_sent > 0, None, files_sent)
-            logger.info(f"File transfer complete - sent {files_sent} files")
+            logger.info(f"File transfer complete — sent {files_sent} files")
             
         except Exception as e:
-            logger.error(f"Error handling file transfer request: {e}")
+            logger.error(f"Error in file transfer background thread: {e}")
             self._send_transfer_complete(False, str(e))
     
     def _send_file_chunked(self, channel: int, filepath: Path) -> bool:
-        """Send a file in chunks to avoid timeouts."""
+        """Send a file in chunks with ACK-based flow control."""
         try:
             file_size = filepath.stat().st_size
-            
-            # Handle empty files
             if file_size == 0:
                 logger.warning(f"File {filepath.name} is empty, skipping transfer")
                 return False
             
-            num_chunks = (file_size + CHUNK_SIZE - 1) // CHUNK_SIZE  # Ceiling division
+            num_chunks = (file_size + CHUNK_SIZE - 1) // CHUNK_SIZE
             transfer_id = f"{channel}_{filepath.name}_{int(time.time())}"
             
-            logger.info(f"Sending file {filepath.name} ({file_size} bytes) in {num_chunks} chunks")
+            logger.info(f"Sending file {filepath.name} ({file_size} bytes) in {num_chunks} chunks "
+                        f"(ACK every {ACK_BATCH_SIZE})")
             
             # Send file start metadata
             if not self.peer_connection.send_command('FILE_TRANSFER_START', {
@@ -163,28 +182,39 @@ class FileTransferManager:
                 logger.error("Failed to send FILE_TRANSFER_START")
                 return False
             
-            # Send file in chunks
+            # Send file in chunks with flow control
             with open(filepath, 'rb') as f:
                 for chunk_index in range(num_chunks):
                     chunk_data = f.read(CHUNK_SIZE)
                     encoded_chunk = base64.b64encode(chunk_data).decode('ascii')
                     
+                    # Use large=True for extended send timeout
                     success = self.peer_connection.send_command('FILE_TRANSFER_CHUNK', {
                         'transfer_id': transfer_id,
                         'chunk_index': chunk_index,
                         'data': encoded_chunk
-                    })
+                    }, large=True)
                     
                     if not success:
                         logger.error(f"Failed to send chunk {chunk_index}/{num_chunks}")
                         return False
                     
-                    # Small delay to avoid flooding
+                    # Baseline delay between every chunk
                     if CHUNK_DELAY_MS > 0:
                         time.sleep(CHUNK_DELAY_MS / 1000.0)
                     
-                    # Log progress every 10 chunks or at the end
-                    if (chunk_index + 1) % 10 == 0 or chunk_index == num_chunks - 1:
+                    # ACK-based flow control: after every ACK_BATCH_SIZE chunks,
+                    # wait for the receiver to acknowledge before continuing.
+                    is_last = (chunk_index == num_chunks - 1)
+                    if (chunk_index + 1) % ACK_BATCH_SIZE == 0 or is_last:
+                        self._chunk_ack_event.clear()
+                        if not self._chunk_ack_event.wait(timeout=ACK_TIMEOUT_SEC):
+                            logger.error(f"Timeout ({ACK_TIMEOUT_SEC}s) waiting for chunk ACK "
+                                         f"at chunk {chunk_index + 1}/{num_chunks}")
+                            return False
+                    
+                    # Log progress periodically
+                    if (chunk_index + 1) % 10 == 0 or is_last:
                         logger.info(f"Progress: {chunk_index + 1}/{num_chunks} chunks sent")
             
             # Send file end marker
@@ -200,6 +230,10 @@ class FileTransferManager:
         except Exception as e:
             logger.error(f"Error in _send_file_chunked: {e}")
             return False
+    
+    def handle_chunk_ack(self, data: dict):
+        """Handle chunk ACK from receiver — unblocks the sender loop."""
+        self._chunk_ack_event.set()
     
     def handle_transfer_start(self, data: dict):
         """Handle start of chunked file transfer."""
@@ -236,7 +270,7 @@ class FileTransferManager:
             logger.error(f"Error handling transfer start: {e}")
     
     def handle_transfer_chunk(self, data: dict):
-        """Handle receiving a file chunk."""
+        """Handle receiving a file chunk and send ACK when a batch is complete."""
         try:
             transfer_id = data.get('transfer_id')
             chunk_index = data.get('chunk_index')
@@ -250,10 +284,22 @@ class FileTransferManager:
             transfer = self.incoming_files[transfer_id]
             transfer['chunks'][chunk_index] = chunk_data
             
-            # Log progress
+            # Progress bookkeeping
             received = len(transfer['chunks'])
             total = transfer['num_chunks']
-            if received % 10 == 0 or received == total:
+            
+            # Send ACK every ACK_BATCH_SIZE chunks (or on the last chunk)
+            # so the sender knows it is safe to continue.
+            is_last = (received == total)
+            if received % ACK_BATCH_SIZE == 0 or is_last:
+                if self.peer_connection and self.peer_connection.is_connected():
+                    self.peer_connection.send_command('FILE_CHUNK_ACK', {
+                        'transfer_id': transfer_id,
+                        'received': received
+                    })
+            
+            # Log / update UI periodically
+            if received % 10 == 0 or is_last:
                 logger.info(f"Received {received}/{total} chunks for {transfer['filename']}")
                 percent = int(100 * received / total)
                 self.update_status(f"📥 Ch{transfer['channel']}: {percent}% ({received}/{total})", 'blue')

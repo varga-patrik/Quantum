@@ -106,7 +106,6 @@ class App:
         self._build_plot_frame()
         self._build_plot_tab()
         self._build_polarizer_tab()
-        self._build_gps_sync_tab()
         self._build_time_offset_tab()
         self._build_offline_correlation_tab()
 
@@ -412,12 +411,10 @@ class App:
         self.notebook = ttk.Notebook(self.root)
         self.tab_plot = ttk.Frame(self.notebook)
         self.tab_polarizer = ttk.Frame(self.notebook)
-        self.tab_gps_sync = ttk.Frame(self.notebook)
         self.tab_time_offset = ttk.Frame(self.notebook)
         self.tab_offline_correlation = ttk.Frame(self.notebook)
         self.notebook.add(self.tab_plot, text="Plotolás")
         self.notebook.add(self.tab_polarizer, text="Polarizáció kontroller")
-        self.notebook.add(self.tab_gps_sync, text="GPS Szinkronizáció")
         self.notebook.add(self.tab_time_offset, text="Időeltolás Kalkulátor")
         self.notebook.add(self.tab_offline_correlation, text="Offline Korreláció")
         self.notebook.grid(row=2, column=0, sticky="news")
@@ -494,6 +491,8 @@ class App:
                                                          self.file_transfer_manager.handle_transfer_data)
             self.peer_connection.register_command_handler('FILE_TRANSFER_COMPLETE', 
                                                          self.file_transfer_manager.handle_transfer_complete)
+            self.peer_connection.register_command_handler('FILE_CHUNK_ACK',
+                                                         self.file_transfer_manager.handle_chunk_ack)
         else:
             self.file_transfer_manager = None
 
@@ -1113,138 +1112,7 @@ class App:
             except Exception:
                 pass
 
-    def _build_gps_sync_tab(self):
-        """Build the GPS synchronization monitoring tab."""
-        from gps_sync import FS740Connection, get_gps_time, format_time_diff, measure_local_drift
-        from gui_components.config import DEFAULT_FS740_ADDRESS, DEFAULT_FS740_PORT
-        
-        # Use configured address based on computer role
-        fs740_address = getattr(self, 'fs740_address', DEFAULT_FS740_ADDRESS)
-        
-        # Main container
-        container = tk.Frame(self.tab_gps_sync, background=self.primary_color, padx=20, pady=20)
-        container.pack(fill=tk.BOTH, expand=True)
-        
-        # Header
-        header = tk.Label(container, text="GPS Clock Synchronization Monitor (FS740)", 
-                         font=('Arial', 14, 'bold'),
-                         background=self.primary_color, foreground=self.fg_color)
-        header.pack(pady=(0, 20))
-        
-        # Connect to FS740 GPS clock (matches C++ implementation)
-        try:
-            self.fs740 = FS740Connection(fs740_address, DEFAULT_FS740_PORT)
-            if not self.fs740.connected:
-                raise ConnectionError("Failed to connect to FS740")
-        except Exception as e:
-            warning = tk.Label(container, 
-                             text=f"⚠️ GPS sync unavailable\nFailed to connect to FS740 at {fs740_address}:{DEFAULT_FS740_PORT}\n{e}",
-                             font=('Arial', 12), foreground='#FF9800',
-                             background=self.primary_color)
-            warning.pack(pady=50)
-            self.fs740 = None
-            return
-        
-        # LOCAL GPS TIME section
-        local_frame = tk.LabelFrame(container, text="Local GPS Time", 
-                                   font=('Arial', 11, 'bold'),
-                                   background='#E8F5E9', bd=2, relief=tk.RIDGE, padx=15, pady=10)
-        local_frame.pack(fill=tk.X, pady=(0, 15))
-        
-        self.gps_local_time_label = tk.Label(local_frame, text="--:--:--.------------",
-                                             font=('Courier New', 16, 'bold'),
-                                             background='#E8F5E9', foreground='#2E7D32')
-        self.gps_local_time_label.pack()
-        
 
-        
-        # LOCAL DRIFT MONITOR section
-        drift_frame = tk.LabelFrame(container, text="Local Computer Clock Drift", 
-                                   font=('Arial', 11, 'bold'),
-                                   background='#F3E5F5', bd=2, relief=tk.RIDGE, padx=15, pady=10)
-        drift_frame.pack(fill=tk.X, pady=(0, 15))
-        
-        self.gps_drift_label = tk.Label(drift_frame, text="Click 'Measure Drift' to test",
-                                       font=('Courier New', 14),
-                                       background='#F3E5F5', foreground='#6A1B9A')
-        self.gps_drift_label.pack()
-        
-        tk.Button(drift_frame, text="Measure Local Drift (10 samples, matches C++)", 
-                 background=self.action_color, font=('Arial', 10),
-                 command=self._measure_gps_drift).pack(pady=(10, 0))
-        
-        # Control buttons
-        btn_frame = tk.Frame(container, background=self.primary_color)
-        btn_frame.pack(pady=(20, 0))
-        
-        self.gps_sync_running = False
-        self.gps_sync_button = tk.Button(btn_frame, text="Start Monitoring", 
-                                         background='#4CAF50', width=20,
-                                         font=('Arial', 10, 'bold'),
-                                         command=self._toggle_gps_sync)
-        self.gps_sync_button.pack(side=tk.LEFT, padx=5)
-    
-    def _toggle_gps_sync(self):
-        """Toggle GPS synchronization monitoring."""
-        self.gps_sync_running = not self.gps_sync_running
-        
-        if self.gps_sync_running:
-            self.gps_sync_button.config(text="Stop Monitoring", background='#FF5722')
-            self._update_gps_sync()
-        else:
-            self.gps_sync_button.config(text="Start Monitoring", background='#4CAF50')
-    
-    def _update_gps_sync(self):
-        """Periodically update GPS synchronization display."""
-        if not self.gps_sync_running:
-            return
-        
-        try:
-            from gps_sync import get_gps_time
-            
-            # Get local GPS time from FS740
-            local_time = get_gps_time(self.fs740) if hasattr(self, 'fs740') and self.fs740 else None
-            if local_time:
-                self.gps_local_time_label.config(text=local_time)
-        except Exception as e:
-            logger.error(f"GPS sync update error: {e}")
-        
-        # Schedule next update
-        if self.gps_sync_running and self.root.winfo_exists():
-            self.root.after(1000, self._update_gps_sync)
-    
-
-    
-    def _measure_gps_drift(self):
-        """Measure drift between computer clock and GPS clock (matches C++ measure_timedrift())."""
-        try:
-            from gps_sync import measure_local_drift, format_time_diff
-            
-            if not hasattr(self, 'fs740') or not self.fs740:
-                self.gps_drift_label.config(text="FS740 not connected")
-                return
-            
-            self.gps_drift_label.config(text="Measuring... (10 seconds)")
-            self.root.update()
-            
-            drifts = measure_local_drift(self.fs740, samples=10)
-            
-            if drifts:
-                avg_drift = sum(drifts) // len(drifts)
-                min_drift = min(drifts)
-                max_drift = max(drifts)
-                
-                avg_val, avg_unit = format_time_diff(avg_drift)
-                min_val, min_unit = format_time_diff(min_drift)
-                max_val, max_unit = format_time_diff(max_drift)
-                
-                result = f"Avg: {avg_val} {avg_unit} | Min: {min_val} {min_unit} | Max: {max_val} {max_unit}"
-                self.gps_drift_label.config(text=result)
-            else:
-                self.gps_drift_label.config(text="Measurement failed")
-        except Exception as e:
-            logger.error(f"GPS drift measurement error: {e}")
-            self.gps_drift_label.config(text=f"Error: {e}")
     
     def _build_time_offset_tab(self):
         """Build the time offset calculator tab."""
@@ -1303,14 +1171,6 @@ class App:
                 self.peer_connection.close()
         except Exception as e:
             logger.exception("Error closing peer connection: %s", e)
-        
-        # Close FS740 GPS clock connection
-        try:
-            if hasattr(self, 'fs740') and self.fs740 is not None:
-                logger.info("Closing FS740 connection...")
-                self.fs740.close()
-        except Exception as e:
-            logger.exception("Error closing FS740 connection: %s", e)
         
         # Close Time Controller socket
         try:

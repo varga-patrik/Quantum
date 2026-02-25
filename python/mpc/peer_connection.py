@@ -13,11 +13,13 @@ logger = logging.getLogger(__name__)
 
 # Protocol constants
 DEFAULT_PORT = 27015
-BUFFER_SIZE = 4096
+BUFFER_SIZE = 131072  # 128 KB - large enough for encrypted file chunks
 HEARTBEAT_INTERVAL = 5.0  # seconds
 CONNECTION_TIMEOUT = 10.0  # seconds
 HANDSHAKE_TIMEOUT = 30.0  # seconds - longer for real network conditions
-SEND_TIMEOUT = 3.0  # seconds - socket send timeout for individual operations
+SEND_TIMEOUT = 10.0  # seconds - socket send timeout for individual operations
+SEND_TIMEOUT_LARGE = 60.0  # seconds - extended timeout for large payloads (file chunks)
+SOCKET_BUF_SIZE = 1048576  # 1 MB socket send/receive buffer
 
 
 class PeerConnection:
@@ -283,6 +285,8 @@ class PeerConnection:
                 self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 self.client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
                 self.client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                self.client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, SOCKET_BUF_SIZE)
+                self.client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, SOCKET_BUF_SIZE)
                 self.client_socket.settimeout(timeout)
                 
                 # Connect to server
@@ -331,6 +335,8 @@ class PeerConnection:
                     # Configure socket for low-latency communication
                     conn.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
                     conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                    conn.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, SOCKET_BUF_SIZE)
+                    conn.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, SOCKET_BUF_SIZE)
                     
                     self.peer_socket = conn
                     self.peer_ip = addr[0]
@@ -436,10 +442,18 @@ class PeerConnection:
                     self.connected = False
                 break
     
-    def send_command(self, command: str, data: Dict[str, Any]) -> bool:
-        """Send an encrypted command to the peer with timeout protection."""
+    def send_command(self, command: str, data: Dict[str, Any], large: bool = False) -> bool:
+        """Send an encrypted command to the peer with timeout protection.
+        
+        Args:
+            command: Command type string
+            data: Command payload dict
+            large: If True, use extended timeout for large payloads (file chunks)
+        """
         if not self.connected or self.peer_socket is None or not self.encryption_ready:
             return False
+        
+        timeout = SEND_TIMEOUT_LARGE if large else SEND_TIMEOUT
         
         try:
             message = {'command': command, **data}
@@ -448,7 +462,7 @@ class PeerConnection:
             
             # Set socket to non-blocking temporarily with timeout
             old_timeout = self.peer_socket.gettimeout()
-            self.peer_socket.settimeout(SEND_TIMEOUT)
+            self.peer_socket.settimeout(timeout)
             
             try:
                 self.peer_socket.sendall(payload)
@@ -458,7 +472,7 @@ class PeerConnection:
                 self.peer_socket.settimeout(old_timeout)
                 
         except socket.timeout:
-            logger.error("Send command timeout after %.1fs for command: %s", SEND_TIMEOUT, command)
+            logger.error("Send command timeout after %.1fs for command: %s", timeout, command)
             return False
         except Exception as e:
             logger.error("Send command error: %s", e)
