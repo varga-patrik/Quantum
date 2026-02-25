@@ -25,8 +25,8 @@ logger = logging.getLogger(__name__)
 class PlotUpdater:
     """Manages real-time plot updates with timestamp streaming and coincidence counting."""
     
-    def __init__(self, fig, ax, canvas, tc, default_acq_duration, bin_width, 
-                 default_bin_count, default_histograms, peer_connection=None, app_ref=None):
+    def __init__(self, fig, ax, canvas, tc, default_acq_duration, bin_width,
+                 default_bin_count, peer_connection=None, app_ref=None):
         self.fig = fig
         self.ax = ax
         self.canvas = canvas
@@ -35,13 +35,11 @@ class PlotUpdater:
         self.default_acq_duration = default_acq_duration
         self.bin_width = bin_width
         self.default_bin_count = default_bin_count
-        self.default_histograms = default_histograms
 
         self.continue_update = False
         self.thread = None
 
         # Display mode
-        self.plot_histogram = False
         self.normalize_plot = False
         
         # Peer connection for cross-site data exchange
@@ -783,21 +781,16 @@ class PlotUpdater:
         self.ax.clear()
 
         # Draw coincidence plot (or placeholder if not streaming yet)
-        if not self.plot_histogram:
-            if self.streaming_active:
-                # Draw live coincidence plot
-                self._draw_coincidence_plot()
-            else:
-                # Show message when not streaming
-                self.ax.text(0.5, 0.5, 
-                            'Timestamp Streaming Not Started\n\n'
-                            'Click "Start" to begin recording\n'
-                            'and see live coincidence measurements',
-                            ha='center', va='center', transform=self.ax.transAxes,
-                            fontsize=12, bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.5))
+        if self.streaming_active:
+            self._draw_coincidence_plot()
         else:
-            # Could show timestamp rate histogram or other diagnostic plots
-            self._draw_placeholder_plot()
+            # Show message when not streaming
+            self.ax.text(0.5, 0.5,
+                        'Timestamp Streaming Not Started\n\n'
+                        'Click "Start" to begin recording\n'
+                        'and see live coincidence measurements',
+                        ha='center', va='center', transform=self.ax.transAxes,
+                        fontsize=12, bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.5))
 
         self.canvas.draw()
 

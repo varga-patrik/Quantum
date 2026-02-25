@@ -17,7 +17,7 @@ from gui_components import (
     DEFAULT_TC_ADDRESS, SERVER_TC_ADDRESS, CLIENT_TC_ADDRESS,
     SERVER_FS740_ADDRESS, CLIENT_FS740_ADDRESS,
     DEFAULT_ACQ_DURATION, DEFAULT_BIN_WIDTH,
-    DEFAULT_BIN_COUNT, DEFAULT_HISTOGRAMS, BG_COLOR, FG_COLOR,
+    DEFAULT_BIN_COUNT, BG_COLOR, FG_COLOR,
     HIGHLIGHT_COLOR, PRIMARY_COLOR, ACTION_COLOR, 
     DEFAULT_LOCAL_SERIALS, DEFAULT_REMOTE_SERIALS,
     format_number, PlotUpdater, OptimizerRowExtended
@@ -72,7 +72,6 @@ class App:
         self.computer_role = "computer_a"  # Default role
         
         # Correlation pairs: (source_a, ch_a, source_b, ch_b, offset_idx)
-        # source is "L" (local buffer) or "R" (remote buffer)
         # offset_idx is 0..3 (which of the four offsets to use)
         # For cross-site: ("L", 1, "R", 1, 0)  →  local ch1 vs remote ch1, offset 1
         # For local loop: ("L", 1, "L", 3, 0)  →  local ch1 vs local ch3, offset 1
@@ -457,9 +456,9 @@ class App:
         self.plot_updater = PlotUpdater(
             fig, ax, canvas, self.tc,
             DEFAULT_ACQ_DURATION, self.bin_width,
-            DEFAULT_BIN_COUNT, DEFAULT_HISTOGRAMS,
+            DEFAULT_BIN_COUNT,
             peer_connection=self.peer_connection,
-            app_ref=self  # Pass reference to access correlation pairs and remote data
+            app_ref=self
         )
         
         # Initialize peer command handlers (for counter sync, optimization control, etc.)
@@ -536,19 +535,12 @@ class App:
                                              font=('Arial', 10, 'bold'), foreground='green')
         self.recording_timer_label.grid(row=0, column=6, sticky="w", padx=10)
         
-        cb_hist = tk.Checkbutton(
-            controls, text='Hisztogram', onvalue=True, offvalue=False,
-            command=lambda: setattr(self.plot_updater, 'plot_histogram', 
-                                   not self.plot_updater.plot_histogram)
-        )
-        cb_hist.grid(row=1, column=1, sticky="news", pady=4)
-        
         cb_norm = tk.Checkbutton(
             controls, text='Normált', onvalue=True, offvalue=False,
             command=lambda: setattr(self.plot_updater, 'normalize_plot', 
                                    not self.plot_updater.normalize_plot)
         )
-        cb_norm.grid(row=1, column=2, sticky="news", pady=4)
+        cb_norm.grid(row=1, column=1, sticky="news", pady=4)
 
     def _build_correlation_pair_selector(self):
         """Build UI for selecting correlation pairs (local-local or local-remote)."""
