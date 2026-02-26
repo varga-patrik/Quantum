@@ -78,8 +78,8 @@ class App:
         # For cross-site: ("L", 1, "R", 1, 0)  →  local ch1 vs remote ch1, offset 1
         # For local loop: ("L", 1, "L", 3, 0)  →  local ch1 vs local ch3, offset 1
         self.correlation_pairs = [
-            ("L", 1, "L", 3, 0),  # Local-1 ↔ Local-3, Offset 1
-            ("L", 1, "L", 4, 1),  # Local-1 ↔ Local-4, Offset 2
+            ("L", 1, "R", 1, 0),  # Local-1 ↔ Remote-1, Offset 1
+            ("L", 2, "R", 4, 1),  # Local-2 ↔ Remote-4, Offset 2
         ]
         
         # Time offset configuration (measured by C++ correlator)
@@ -752,12 +752,19 @@ class App:
             self._calibrate_buttons[offset_idx].config(state='disabled', text="⏳ Wait…")
         if offset_idx in self._calibration_status_labels:
             self._calibration_status_labels[offset_idx].config(
-                text=f"Accumulating data… 0/{CALIBRATION_DURATION_SEC}s",
+                text="Starting calibration…",
                 foreground='#1565C0')
 
         def _calibration_worker():
             """Background worker: wait for data, then run FFT."""
             try:
+                # Reload duration from config so changes take effect without restart
+                import importlib
+                import gui_components.config as _cfg_mod
+                importlib.reload(_cfg_mod)
+                cal_duration = _cfg_mod.CALIBRATION_DURATION_SEC
+                logger.info(f"Calibration[Offset {offset_idx+1}]: duration reloaded = {cal_duration}s")
+
                 # --- Phase 1: Accumulate data ---
                 # Clear the relevant buffers so we get fresh data only
                 bufs_a = self.plot_updater.local_buffers if src_a == "L" else self.plot_updater.remote_buffers
@@ -765,20 +772,20 @@ class App:
                 bufs_a[ch_a].clear()
                 bufs_b[ch_b].clear()
                 logger.info(f"Calibration[Offset {offset_idx+1}]: Cleared buffers, "
-                           f"accumulating {CALIBRATION_DURATION_SEC}s of data…")
+                           f"accumulating {cal_duration}s of data…")
 
                 # Wait, updating countdown on UI
-                for elapsed in range(CALIBRATION_DURATION_SEC):
+                for elapsed in range(cal_duration):
                     if not self.plot_updater.streaming_active:
                         self.root.after(0, lambda: self._calibration_status_labels.get(offset_idx) and
                                         self._calibration_status_labels[offset_idx].config(
                                             text="⚠️ Streaming stopped", foreground='#D32F2F'))
                         return
-                    remaining = CALIBRATION_DURATION_SEC - elapsed
-                    self.root.after(0, lambda r=remaining: (
+                    remaining = cal_duration - elapsed
+                    self.root.after(0, lambda r=remaining, d=cal_duration: (
                         self._calibration_status_labels.get(offset_idx) and
                         self._calibration_status_labels[offset_idx].config(
-                            text=f"Accumulating data… {CALIBRATION_DURATION_SEC - r}/{CALIBRATION_DURATION_SEC}s",
+                            text=f"Accumulating data… {d - r}/{d}s",
                             foreground='#1565C0')
                     ))
                     time.sleep(1)

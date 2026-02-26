@@ -33,7 +33,7 @@ STREAM_PORTS_BASE = 4241  # Time Controller streaming ports: 4242, 4243, 4244, 4
 
 # Live offset calibration
 # Duration in seconds to accumulate data before running FFT calibration
-CALIBRATION_DURATION_SEC = 300
+CALIBRATION_DURATION_SEC = 30
 
 # Live FFT calibration parameters — optimised for expected ~103 µs offset
 # tau=4096 ps, N=2^17=131072 → window ≈ 537 µs (±268 µs), resolution ≈ 4 ns
