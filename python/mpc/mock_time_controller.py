@@ -14,7 +14,6 @@ CORRELATION MODES (configured in gui_components/config.py):
 """
 import numpy as np
 import logging
-import struct
 import time
 
 logger = logging.getLogger(__name__)
@@ -22,6 +21,7 @@ logger = logging.getLogger(__name__)
 # Import correlation mode and time offset from central config
 try:
     from gui_components.config import MOCK_CORRELATION_MODE, MOCK_TIME_OFFSET_PS, DEBUG_MODE
+    from gui_components.config import MOCK_CHANNEL_OFFSETS_PS
 except ImportError:
     raise ImportError("Could not import variables from config.")
 
@@ -79,19 +79,28 @@ class MockTimeController:
         
         # Site-specific time offset (simulates GPS sync error)
         # AND site-specific seed offset for localhost testing
-        # Server (Wigner): +offset ps (later), Client (BME): 0 ps (reference)
+        # Server (Wigner): per-channel offsets, Client (BME): 0 ps (reference)
         logger.info(f"MockTC initializing with site_name='{site_name}', MOCK_TIME_OFFSET_PS={MOCK_TIME_OFFSET_PS}")
         
         if "SERVER" in site_name.upper() or "WIGNER" in site_name.upper() or "148.6.27.28" in site_name:
-            self._site_time_offset_ps = MOCK_TIME_OFFSET_PS  # This is added to all timestamps
+            # Per-channel offsets for realistic testing of per-pair calibration
+            self._channel_offsets_ps = {
+                ch: MOCK_CHANNEL_OFFSETS_PS.get(ch, MOCK_TIME_OFFSET_PS)
+                for ch in range(1, 5)
+            }
+            self._site_time_offset_ps = MOCK_TIME_OFFSET_PS  # legacy compat
             self._site_seed_offset = 1000000  # Different seeds from client
-            logger.info(f"MockTC: Identified as SERVER ({site_name}), offset={MOCK_TIME_OFFSET_PS}ps, seed_offset={self._site_seed_offset}")
+            logger.info(f"MockTC: Identified as SERVER ({site_name}), "
+                       f"per-channel offsets={self._channel_offsets_ps}, "
+                       f"seed_offset={self._site_seed_offset}")
         elif "CLIENT" in site_name.upper() or "BME" in site_name.upper() or "169.254.104.112" in site_name:
+            self._channel_offsets_ps = {ch: 0 for ch in range(1, 5)}
             self._site_time_offset_ps = 0  # Client at reference time
             self._site_seed_offset = 2000000  # Different seeds from server
             logger.info(f"MockTC: Identified as CLIENT ({site_name}), offset=0ps, seed_offset={self._site_seed_offset}")
         else:
             # Unknown site - use address as hash for unique seed
+            self._channel_offsets_ps = {ch: 0 for ch in range(1, 5)}
             self._site_time_offset_ps = 0
             self._site_seed_offset = abs(hash(site_name)) % 10000000
             logger.warning(f"MockTC: Unknown site '{site_name}', using hash-based seed offset: {self._site_seed_offset}")
@@ -162,28 +171,31 @@ class MockTimeController:
         # Combine all events
         all_times = np.concatenate([correlated_times, singles_times])
         
-        # Apply site-specific time offset (for cross-site synchronization testing)
+        # Apply PER-CHANNEL time offset (for cross-site synchronization testing)
+        channel_offset = self._channel_offsets_ps.get(channel, self._site_time_offset_ps)
         if DEBUG_MODE and len(all_times) > 0:
             logger.debug(f"Ch{channel}: Before offset - range [{all_times.min():.0f} - {all_times.max():.0f}] ps")
         
-        all_times = all_times + self._site_time_offset_ps
+        all_times = all_times + channel_offset
         
         if DEBUG_MODE and len(all_times) > 0:
-            logger.debug(f"Ch{channel}: After +{self._site_time_offset_ps}ps offset - range [{all_times.min():.0f} - {all_times.max():.0f}] ps")
+            logger.debug(f"Ch{channel}: After +{channel_offset}ps offset - range [{all_times.min():.0f} - {all_times.max():.0f}] ps")
         
         # Wrap to 1-second period
         all_times = all_times % int(1e12)
         all_times = np.clip(all_times, 0, int(1e12) - 1)
         all_times = np.sort(all_times).astype(np.uint64)
         
-        # Convert to binary format
+        # Convert to binary format (vectorised — avoids slow Python loop)
         if with_ref_index:
-            binary_data = b''.join(
-                struct.pack('<QQ', int(ts), self._reference_second) 
-                for ts in all_times
-            )
+            # Interleave [ts, ref_second, ts, ref_second, ...] as uint64 pairs
+            ref_arr = np.full(len(all_times), self._reference_second, dtype=np.uint64)
+            interleaved = np.empty(len(all_times) * 2, dtype=np.uint64)
+            interleaved[0::2] = all_times
+            interleaved[1::2] = ref_arr
+            binary_data = interleaved.tobytes()
         else:
-            binary_data = b''.join(struct.pack('<Q', int(ts)) for ts in all_times)
+            binary_data = all_times.tobytes()
         
         return binary_data
     

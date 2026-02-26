@@ -273,7 +273,7 @@ class TimeOffsetCalculator:
         Returns:
             Tuple of (correlation_function, peak_value_sigma, peak_index)
         """
-        logger.info("Computing FFT cross-correlation (matching C++ exactly)...")
+        logger.info("Computing FFT cross-correlation (rfft — optimised for real data)...")
         
         if DEBUG_MODE:
             logger.info(f"[DEBUG] Buffer shapes: buff1={buff1.shape}, buff2={buff2.shape}")
@@ -284,17 +284,17 @@ class TimeOffsetCalculator:
             logger.info(f"[DEBUG] buff1 non-zero bins: {np.count_nonzero(buff1)} / {len(buff1)}")
             logger.info(f"[DEBUG] buff2 non-zero bins: {np.count_nonzero(buff2)} / {len(buff2)}")
         
-        # Step 1: Forward FFT on both buffers
-        # fft1 = FFT(local), fft2 = FFT(remote)
-        fft1 = np.fft.fft(buff1)  # LOCAL
-        fft2 = np.fft.fft(buff2)  # REMOTE
+        # Step 1: Forward real-FFT on both buffers (rfft: 2× faster, half memory)
+        # Histograms are real-valued → rfft gives identical correlation to full fft
+        fft1 = np.fft.rfft(buff1)  # LOCAL  — length N//2+1 complex
+        fft2 = np.fft.rfft(buff2)  # REMOTE
         
         if DEBUG_MODE:
-            logger.info(f"[DEBUG] FFT(local) stats: max_mag={np.max(np.abs(fft1)):.2e}")
-            logger.info(f"[DEBUG] FFT(remote) stats: max_mag={np.max(np.abs(fft2)):.2e}")
+            logger.info(f"[DEBUG] rfft(local) length: {len(fft1)}, max_mag={np.max(np.abs(fft1)):.2e}")
+            logger.info(f"[DEBUG] rfft(remote) length: {len(fft2)}, max_mag={np.max(np.abs(fft2)):.2e}")
         
         # Step 2: Cross-correlation in frequency domain
-        # Formula: cross_corr = IFFT( conj(FFT(local)) * FFT(remote) )
+        # Formula: cross_corr = IRFFT( conj(FFT(local)) * FFT(remote) )
         # Peak at index k means: remote is AHEAD of local by k * tau
         cbuff_c = np.conj(fft1) * fft2
         
@@ -305,14 +305,11 @@ class TimeOffsetCalculator:
         del fft1, fft2
         gc.collect()
         
-        # Step 3: Inverse FFT
-        cbuff = np.fft.ifft(cbuff_c) * self.N  # Multiply by N to match FFTW behavior
+        # Step 3: Inverse real-FFT → directly real output of length N
+        # irfft already returns real data, no need for .real extraction
+        # The *N then /N cancels out — equivalent to just irfft(cbuff_c, n=N)
+        cbuffr = np.fft.irfft(cbuff_c, n=self.N)
         del cbuff_c
-        gc.collect()
-        
-        # Step 4: Divide by N and take real part
-        cbuffr = (cbuff.real / self.N).copy()
-        del cbuff
         gc.collect()
         
         if DEBUG_MODE:
@@ -384,9 +381,14 @@ class TimeOffsetCalculator:
         Returns:
             Dict with confidence metrics
         """
-        # Find second-highest peak (to check for ambiguity)
+        # Find second-highest peak (to check for ambiguity).
+        # Suppress a neighbourhood around the main peak so that spectral
+        # leakage into adjacent bins doesn't count as a competing peak.
+        suppress_radius = max(5, int(self.N * 0.001))  # ±5 bins or 0.1% of N
         correlation_copy = correlation_func.copy()
-        correlation_copy[peak_index] = -np.inf
+        lo = max(0, peak_index - suppress_radius)
+        hi = min(len(correlation_copy), peak_index + suppress_radius + 1)
+        correlation_copy[lo:hi] = -np.inf
         second_peak_value = np.max(correlation_copy)
         second_peak_index = np.argmax(correlation_copy)
         del correlation_copy

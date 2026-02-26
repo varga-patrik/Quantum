@@ -26,6 +26,8 @@ from gui_components.file_transfer_manager import FileTransferManager
 from gui_components.peer_command_handlers import PeerCommandHandlers
 from gui_components.time_offset_tab import TimeOffsetTab
 from gui_components.offline_correlation_tab import OfflineCorrelationTab
+from gui_components.config import CALIBRATION_DURATION_SEC
+from streaming.live_offset_calibrator import LiveOffsetCalibrator, CalibrationResult
 from mock_time_controller import MockTimeController, is_mock_controller
 from peer_connection import PeerConnection
 from connection_dialog import show_connection_dialog
@@ -543,61 +545,139 @@ class App:
         cb_norm.grid(row=1, column=1, sticky="news", pady=4)
 
     def _build_correlation_pair_selector(self):
-        """Build UI for selecting correlation pairs (local-local or local-remote)."""
-        selector_frame = tk.Frame(self.tab_plot_left, relief=tk.GROOVE, bd=2, width=500)
-        selector_frame.grid(row=2, column=0, sticky="nws", pady=5)
-        
-        tk.Label(selector_frame, text="Correlation Pairs:", 
-                font=('Arial', 10, 'bold'), height=1).grid(
-            row=0, column=0, columnspan=4, sticky="w", padx=5, pady=5
-        )
-        
-        # List of active pairs
-        self.pair_listbox = tk.Listbox(selector_frame, height=6, width=40)
-        self.pair_listbox.grid(row=1, column=0, columnspan=4, sticky="ew", padx=5, pady=5)
-        
-        # Populate with default pairs
-        self._update_pair_listbox()
-        
-        # Add pair controls — Source A
-        tk.Label(selector_frame, text="A:").grid(row=2, column=0, sticky="e", padx=2)
+        """Build UI for selecting correlation pairs with per-pair calibrate buttons."""
+        selector_frame = tk.LabelFrame(self.tab_plot_left, text="Correlation Pairs & Live Calibration",
+                                       font=('Arial', 10, 'bold'),
+                                       relief=tk.GROOVE, bd=2, padx=5, pady=5)
+        selector_frame.grid(row=2, column=0, sticky="ew", padx=5, pady=5)
+
+        # --- Active pairs display (with calibrate buttons) ---
+        self.pair_rows_frame = tk.Frame(selector_frame)
+        self.pair_rows_frame.grid(row=0, column=0, columnspan=6, sticky="ew", padx=2, pady=2)
+
+        # Placeholder for dynamically built pair rows
+        self._pair_row_widgets = []
+        self._calibration_status_labels = {}  # offset_idx → Label widget
+        self._calibrate_buttons = {}          # offset_idx → Button widget
+        self._rebuild_pair_rows()
+
+        # Separator
+        ttk.Separator(selector_frame, orient='horizontal').grid(
+            row=1, column=0, columnspan=6, sticky="ew", pady=5)
+        # --- Add pair controls ---
+        add_frame = tk.Frame(selector_frame)
+        add_frame.grid(row=2, column=0, columnspan=6, sticky="ew", padx=2, pady=2)
+
+        # Source A
+        tk.Label(add_frame, text="A:").grid(row=0, column=0, sticky="e", padx=2)
         self.pair_src_a_var = tk.StringVar(value="Local")
-        ttk.Combobox(selector_frame, values=["Local", "Remote"], width=8, state="readonly",
-                     textvariable=self.pair_src_a_var).grid(row=2, column=1, sticky="w", padx=1)
+        ttk.Combobox(add_frame, values=["Local", "Remote"], width=8, state="readonly",
+                     textvariable=self.pair_src_a_var).grid(row=0, column=1, sticky="w", padx=1)
         self.pair_ch_a_var = tk.StringVar(value="1")
-        ttk.Combobox(selector_frame, values=["1", "2", "3", "4"], width=3, state="readonly",
-                     textvariable=self.pair_ch_a_var).grid(row=2, column=2, sticky="w", padx=1)
-        
+        ttk.Combobox(add_frame, values=["1", "2", "3", "4"], width=3, state="readonly",
+                     textvariable=self.pair_ch_a_var).grid(row=0, column=2, sticky="w", padx=1)
+
         # Source B
-        tk.Label(selector_frame, text="B:").grid(row=3, column=0, sticky="e", padx=2)
+        tk.Label(add_frame, text="B:").grid(row=1, column=0, sticky="e", padx=2)
         self.pair_src_b_var = tk.StringVar(value="Remote")
-        ttk.Combobox(selector_frame, values=["Local", "Remote"], width=8, state="readonly",
-                     textvariable=self.pair_src_b_var).grid(row=3, column=1, sticky="w", padx=1)
+        ttk.Combobox(add_frame, values=["Local", "Remote"], width=8, state="readonly",
+                     textvariable=self.pair_src_b_var).grid(row=1, column=1, sticky="w", padx=1)
         self.pair_ch_b_var = tk.StringVar(value="3")
-        ttk.Combobox(selector_frame, values=["1", "2", "3", "4"], width=3, state="readonly",
-                     textvariable=self.pair_ch_b_var).grid(row=3, column=2, sticky="w", padx=1)
-        
+        ttk.Combobox(add_frame, values=["1", "2", "3", "4"], width=3, state="readonly",
+                     textvariable=self.pair_ch_b_var).grid(row=1, column=2, sticky="w", padx=1)
+
         # Offset selector
-        tk.Label(selector_frame, text="Offset:").grid(row=4, column=0, sticky="e", padx=2)
+        tk.Label(add_frame, text="Offset:").grid(row=2, column=0, sticky="e", padx=2)
         self.pair_offset_var = tk.StringVar(value="1")
-        ttk.Combobox(selector_frame, values=["1", "2", "3", "4"], width=3, state="readonly",
-                     textvariable=self.pair_offset_var).grid(row=4, column=1, sticky="w", padx=1)
-        
-        # Add/Remove buttons
-        tk.Button(selector_frame, text="+ Add Pair", background='#4CAF50', width=12,
-                 command=self._add_correlation_pair).grid(row=2, column=3, padx=5)
-        
-        tk.Button(selector_frame, text="- Remove Selected", background='#FF5722', width=12,
-                 command=self._remove_correlation_pair).grid(row=3, column=3, padx=5)
-    
-    def _update_pair_listbox(self):
-        """Update the correlation pair listbox display."""
-        self.pair_listbox.delete(0, tk.END)
+        ttk.Combobox(add_frame, values=["1", "2", "3", "4"], width=3, state="readonly",
+                     textvariable=self.pair_offset_var).grid(row=2, column=1, sticky="w", padx=1)
+
+        # Add / Remove buttons
+        tk.Button(add_frame, text="+ Add Pair", background='#4CAF50', width=12,
+                  command=self._add_correlation_pair).grid(row=0, column=3, padx=5)
+        tk.Button(add_frame, text="- Remove Last", background='#FF5722', width=12,
+                  command=self._remove_correlation_pair).grid(row=1, column=3, padx=5)
+
+        # Live calibrator instance
+        self._live_calibrator = LiveOffsetCalibrator()
+        self._calibration_threads = {}  # offset_idx → Thread
+
+    # ------------------------------------------------------------------
+    #  Pair row helpers
+    # ------------------------------------------------------------------
+
+    def _rebuild_pair_rows(self):
+        """Rebuild the pair display rows with calibrate buttons."""
+        # Clear old widgets
+        for w in self._pair_row_widgets:
+            w.destroy()
+        self._pair_row_widgets.clear()
+        self._calibration_status_labels.clear()
+        self._calibrate_buttons.clear()
+
         src_name = lambda s: "Local" if s == "L" else "Remote"
-        for src_a, ch_a, src_b, ch_b, ofs_idx in self.correlation_pairs:
-            self.pair_listbox.insert(tk.END,
-                f"{src_name(src_a)}-{ch_a} ↔ {src_name(src_b)}-{ch_b}  [Offset {ofs_idx + 1}]")
-    
+
+        if not self.correlation_pairs:
+            lbl = tk.Label(self.pair_rows_frame, text="No pairs configured — add one below",
+                          font=('Arial', 9, 'italic'), foreground='gray')
+            lbl.grid(row=0, column=0, columnspan=6, pady=5)
+            self._pair_row_widgets.append(lbl)
+            return
+
+        # Header
+        for col, text, w in [(0, "Pair", 28), (1, "Offset Slot", 10),
+                             (2, "Value (ps)", 16), (3, "", 10), (4, "Status", 30)]:
+            lbl = tk.Label(self.pair_rows_frame, text=text,
+                          font=('Arial', 8, 'bold'), width=w, anchor='w')
+            lbl.grid(row=0, column=col, sticky="w", padx=2)
+            self._pair_row_widgets.append(lbl)
+
+        for row_i, (src_a, ch_a, src_b, ch_b, ofs_idx) in enumerate(self.correlation_pairs, start=1):
+            # Pair label
+            pair_text = f"{src_name(src_a)}-{ch_a} ↔ {src_name(src_b)}-{ch_b}"
+            lbl_pair = tk.Label(self.pair_rows_frame, text=pair_text,
+                               font=('Courier New', 9), anchor='w', width=28)
+            lbl_pair.grid(row=row_i, column=0, sticky="w", padx=2, pady=1)
+            self._pair_row_widgets.append(lbl_pair)
+
+            # Offset slot number
+            lbl_slot = tk.Label(self.pair_rows_frame, text=f"Offset {ofs_idx+1}",
+                               font=('Arial', 9, 'bold'), width=10, anchor='w')
+            lbl_slot.grid(row=row_i, column=1, sticky="w", padx=2)
+            self._pair_row_widgets.append(lbl_slot)
+
+            # Current offset value
+            val = self.time_offsets_ps[ofs_idx]
+            val_text = f"{val:,}" if val is not None else "—"
+            lbl_val = tk.Label(self.pair_rows_frame, text=val_text,
+                              font=('Courier New', 9), width=16, anchor='w',
+                              foreground='#2E7D32' if val is not None else '#F57C00')
+            lbl_val.grid(row=row_i, column=2, sticky="w", padx=2)
+            self._pair_row_widgets.append(lbl_val)
+
+            # Calibrate button (only if we haven't already placed one for this offset_idx)
+            if ofs_idx not in self._calibrate_buttons:
+                btn = tk.Button(
+                    self.pair_rows_frame, text="🔬 Calibrate",
+                    background='#9C27B0', foreground='white',
+                    font=('Arial', 8, 'bold'), width=10,
+                    command=lambda idx=ofs_idx: self._start_live_calibration(idx),
+                )
+                btn.grid(row=row_i, column=3, padx=2, pady=1)
+                self._calibrate_buttons[ofs_idx] = btn
+                self._pair_row_widgets.append(btn)
+
+                # Status label
+                status = tk.Label(self.pair_rows_frame, text="from config" if val is not None else "not set",
+                                 font=('Arial', 8), foreground='#666', width=30, anchor='w')
+                status.grid(row=row_i, column=4, sticky="w", padx=2)
+                self._calibration_status_labels[ofs_idx] = status
+                self._pair_row_widgets.append(status)
+
+    def _update_pair_listbox(self):
+        """Update the correlation pair display (now uses rows instead of listbox)."""
+        self._rebuild_pair_rows()
+
     def _add_correlation_pair(self):
         """Add a new correlation pair."""
         try:
@@ -618,17 +698,164 @@ class App:
             logger.error("Error adding correlation pair: %s", e)
     
     def _remove_correlation_pair(self):
-        """Remove selected correlation pair."""
+        """Remove the last correlation pair."""
         try:
-            selection = self.pair_listbox.curselection()
-            if selection:
-                idx = selection[0]
-                removed_pair = self.correlation_pairs.pop(idx)
+            if self.correlation_pairs:
+                removed_pair = self.correlation_pairs.pop()
                 self._update_pair_listbox()
                 logger.info("Removed correlation pair: %s", removed_pair)
         except Exception as e:
             logger.error("Error removing correlation pair: %s", e)
-    
+
+    # ------------------------------------------------------------------
+    #  Live offset calibration
+    # ------------------------------------------------------------------
+
+    def _start_live_calibration(self, offset_idx: int):
+        """Start live FFT calibration for a specific offset slot.
+
+        Requires streaming to be active (buffers must have data).
+        Runs in a background thread so the UI stays responsive.
+        Data is accumulated for CALIBRATION_DURATION_SEC seconds,
+        then the FFT is computed.
+        """
+        import threading
+
+        # Check streaming is active
+        if not hasattr(self, 'plot_updater') or not self.plot_updater.streaming_active:
+            if offset_idx in self._calibration_status_labels:
+                self._calibration_status_labels[offset_idx].config(
+                    text="⚠️ Start streaming first!", foreground='#D32F2F')
+            logger.warning("Cannot calibrate — streaming not active")
+            return
+
+        # Check not already running for this slot
+        if offset_idx in self._calibration_threads and self._calibration_threads[offset_idx].is_alive():
+            logger.warning("Calibration already running for offset %d", offset_idx + 1)
+            return
+
+        # Find the pair that uses this offset slot (first match)
+        pair = None
+        for src_a, ch_a, src_b, ch_b, ofs_idx in self.correlation_pairs:
+            if ofs_idx == offset_idx:
+                pair = (src_a, ch_a, src_b, ch_b)
+                break
+
+        if pair is None:
+            logger.error("No pair uses offset slot %d", offset_idx + 1)
+            return
+
+        src_a, ch_a, src_b, ch_b = pair
+
+        # Disable button, update status
+        if offset_idx in self._calibrate_buttons:
+            self._calibrate_buttons[offset_idx].config(state='disabled', text="⏳ Wait…")
+        if offset_idx in self._calibration_status_labels:
+            self._calibration_status_labels[offset_idx].config(
+                text=f"Accumulating data… 0/{CALIBRATION_DURATION_SEC}s",
+                foreground='#1565C0')
+
+        def _calibration_worker():
+            """Background worker: wait for data, then run FFT."""
+            try:
+                # --- Phase 1: Accumulate data ---
+                # Clear the relevant buffers so we get fresh data only
+                bufs_a = self.plot_updater.local_buffers if src_a == "L" else self.plot_updater.remote_buffers
+                bufs_b = self.plot_updater.local_buffers if src_b == "L" else self.plot_updater.remote_buffers
+                bufs_a[ch_a].clear()
+                bufs_b[ch_b].clear()
+                logger.info(f"Calibration[Offset {offset_idx+1}]: Cleared buffers, "
+                           f"accumulating {CALIBRATION_DURATION_SEC}s of data…")
+
+                # Wait, updating countdown on UI
+                for elapsed in range(CALIBRATION_DURATION_SEC):
+                    if not self.plot_updater.streaming_active:
+                        self.root.after(0, lambda: self._calibration_status_labels.get(offset_idx) and
+                                        self._calibration_status_labels[offset_idx].config(
+                                            text="⚠️ Streaming stopped", foreground='#D32F2F'))
+                        return
+                    remaining = CALIBRATION_DURATION_SEC - elapsed
+                    self.root.after(0, lambda r=remaining: (
+                        self._calibration_status_labels.get(offset_idx) and
+                        self._calibration_status_labels[offset_idx].config(
+                            text=f"Accumulating data… {CALIBRATION_DURATION_SEC - r}/{CALIBRATION_DURATION_SEC}s",
+                            foreground='#1565C0')
+                    ))
+                    time.sleep(1)
+
+                # --- Phase 2: Snapshot buffers and run FFT ---
+                self.root.after(0, lambda: (
+                    self._calibration_status_labels.get(offset_idx) and
+                    self._calibration_status_labels[offset_idx].config(
+                        text="Computing FFT…", foreground='#6A1B9A')
+                ))
+
+                ts_a = bufs_a[ch_a].get_timestamps()
+                ts_b = bufs_b[ch_b].get_timestamps()
+
+                logger.info(f"Calibration[Offset {offset_idx+1}]: Snapshots — "
+                           f"a={len(ts_a):,}, b={len(ts_b):,}")
+
+                result: CalibrationResult = self._live_calibrator.calibrate_pair(ts_a, ts_b)
+
+                # --- Phase 3: Apply result ---
+                self.root.after(0, lambda: self._apply_calibration_result(offset_idx, result))
+
+            except Exception as e:
+                logger.error(f"Calibration failed for offset {offset_idx+1}: {e}", exc_info=True)
+                self.root.after(0, lambda: self._apply_calibration_result(
+                    offset_idx, CalibrationResult(success=False, message=str(e))))
+
+        thread = threading.Thread(target=_calibration_worker, daemon=True,
+                                  name=f"LiveCalibrate-Ofs{offset_idx+1}")
+        self._calibration_threads[offset_idx] = thread
+        thread.start()
+
+    def _apply_calibration_result(self, offset_idx: int, result: CalibrationResult):
+        """Apply a calibration result to the UI and app state (runs on main thread)."""
+        # Re-enable button
+        if offset_idx in self._calibrate_buttons:
+            self._calibrate_buttons[offset_idx].config(state='normal', text="🔬 Calibrate")
+
+        if result.success and result.reliable:
+            # Save offset
+            self.time_offsets_ps[offset_idx] = result.offset_ps
+            self.time_offsets_updated[offset_idx] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self._save_time_offset()
+
+            # Update offset entry widget if it exists
+            if hasattr(self, 'offset_entries') and offset_idx < len(self.offset_entries):
+                self.offset_entries[offset_idx].delete(0, tk.END)
+                self.offset_entries[offset_idx].insert(0, str(result.offset_ps))
+
+            status_text = (f"✅ {result.offset_ps:,} ps ({result.offset_ps/1e6:.1f} µs) | "
+                          f"{result.peak_sigma:.1f}σ {result.confidence} | "
+                          f"{result.elapsed_sec:.1f}s")
+            status_color = '#2E7D32'
+
+            logger.info(f"Calibration[Offset {offset_idx+1}]: SUCCESS — "
+                       f"{result.offset_ps:,} ps, {result.confidence}")
+        elif result.success and not result.reliable:
+            # Low confidence — show but don't auto-save
+            status_text = (f"⚠️ {result.offset_ps:,} ps BUT {result.confidence} confidence "
+                          f"({result.peak_sigma:.1f}σ) — not saved, retry?")
+            status_color = '#F57C00'
+            logger.warning(f"Calibration[Offset {offset_idx+1}]: LOW CONFIDENCE — "
+                          f"{result.offset_ps:,} ps, {result.peak_sigma:.1f}σ")
+        else:
+            status_text = f"❌ Failed: {result.message}"
+            status_color = '#D32F2F'
+            logger.error(f"Calibration[Offset {offset_idx+1}]: FAILED — {result.message}")
+
+        if offset_idx in self._calibration_status_labels:
+            self._calibration_status_labels[offset_idx].config(
+                text=status_text, foreground=status_color)
+
+        # Refresh the pair rows to show updated offset values
+        self._rebuild_pair_rows()
+        if hasattr(self, 'offset_status_labels'):
+            self._update_time_offset_status()
+
     def _build_time_offset_config(self):
         """Build time offset configuration section with four offset slots."""
         offset_frame = tk.LabelFrame(self.tab_plot_left, text="Time Offsets (ps)", 

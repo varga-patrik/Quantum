@@ -31,6 +31,15 @@ TIMESTAMP_BUFFER_MAX_SIZE = 10_000_000  # Max timestamps per channel (safety lim
 TIMESTAMP_BATCH_INTERVAL_SEC = 0.1  # Send batches to peer every 0.1 seconds (10 Hz)
 STREAM_PORTS_BASE = 4241  # Time Controller streaming ports: 4242, 4243, 4244, 4245
 
+# Live offset calibration
+# Duration in seconds to accumulate data before running FFT calibration
+CALIBRATION_DURATION_SEC = 300
+
+# Live FFT calibration parameters — optimised for expected ~103 µs offset
+# tau=4096 ps, N=2^17=131072 → window ≈ 537 µs (±268 µs), resolution ≈ 4 ns
+LIVE_FFT_TAU = 4096
+LIVE_FFT_N = 2**17  # 131_072
+
 # Mock Time Controller correlation mode (only used when real hardware unavailable)
 # 'cross_site': Site A and Site B detect same photon events (quantum entanglement)
 #               → Site A Ch1 correlates with Site B Ch1 (with time offset)
@@ -39,7 +48,18 @@ MOCK_CORRELATION_MODE = 'cross_site'  # MUST be 'cross_site' or 'local_pairs'
 
 # Mock time offset between sites (in picoseconds)
 # Server (Wigner) will be this many picoseconds LATER than Client (BME)
-MOCK_TIME_OFFSET_PS = 5000 #103673856
+# Used as fallback when MOCK_CHANNEL_OFFSETS_PS is not defined for a channel.
+MOCK_TIME_OFFSET_PS = 103673856
+
+# Per-channel mock offsets (in picoseconds) for testing per-pair calibration.
+# Each channel can have a DIFFERENT offset so calibration can be verified per-pair.
+# Only applied on the SERVER side; CLIENT is always the reference (0 offset).
+MOCK_CHANNEL_OFFSETS_PS = {
+    1: 103_000_000,   # Ch1: 103.0 µs  (realistic BME↔Wigner range)
+    2: 107_500_000,   # Ch2: 107.5 µs  (slightly different cable/detector)
+    3:  98_200_000,   # Ch3:  98.2 µs
+    4: 110_800_000,   # Ch4: 110.8 µs
+}
 
 # Theme colors
 BG_COLOR = '#1E1E1E'
