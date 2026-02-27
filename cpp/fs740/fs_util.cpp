@@ -282,6 +282,26 @@ void FSUtil::wait_until(const char* t){
 //megmondja hogy a ket idopont kozul az egyik korabbi e
 bool FSUtil::is_earlier_time(const char* early, const char* late){
     return calculate_time_diff(early, late) < 0;
+
+    /*for(int i = 0; i < 20; i++){
+        if(early[i] == '\0' && late[i] == '\0'){
+            return false;
+        }
+        if(early[i] == '\0'){
+            return false;
+        }
+        if(late[i] == '\0'){
+            return true;
+        }
+        if(early[i] != '.' && early[i] != ',' && late[i] != '.' && late[i] != ','){
+            short int_early = early[i] - '0';
+            short int_late = late[i] - '0';
+            if(int_early != int_late){
+                return int_early < int_late;
+            }
+        }
+    }
+    return false;*/
 }
 
 //kiirja fajlba a megadott szamot, csak akkor mukodik ha admin jogokkal fut az .exe
@@ -357,8 +377,8 @@ std::string FSUtil::start_time(){
 void FSUtil::measure_setup(){
     if(connected){
         fs740_write("sour3:func puls\n");
-        fs740_write("sour3:freq 1Hz\n");
-        fs740_write("sour3:puls:dcyc 0.0001%\n");
+        fs740_write("sour3:puls:per 1 s\n");
+        fs740_write("sour3:puls:widt 10 ns\n");
         fs740_write("sour3:phas:sync\n");
     }
 }

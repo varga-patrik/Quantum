@@ -50,8 +50,8 @@ int main(int argc, char* argv[]) {
 
     correlator.Tshift = 0;
 
-    std::vector<std::string> files_bme = collectFiles("../data", "timestamps_bme_01-30_14-07");
-    std::vector<std::string> files_wigner = collectFiles("../data", "timestamps_wigner_01-30_14-07");
+    std::vector<std::string> files_bme = collectFiles("../data", "timestamps_bme_02-20_10-49");
+    std::vector<std::string> files_wigner = collectFiles("../data", "timestamps_wigner_02-20_10-49");
 
     correlator.runCorrelation(false, files_bme, files_wigner, 2048);
 }

@@ -1,0 +1,89 @@
+3 perces adatgyűjtés:
+MEAN(cbuff) = 1.17875e+08, VAR(cbuff) = 10860.8
+max(S) = 19.882113, kmax = 50591
+Delta T = 103.610368 microsec
+Futasi ido: 31
+
+MEAN(cbuff) = 1.15907e+08, VAR(cbuff) = 10756.1
+max(S) = 20.922937, kmax = 50591
+Delta T = 103.610368 microsec
+Futasi ido: 33
+
+MEAN(cbuff) = 1.14164e+08, VAR(cbuff) = 10675.7
+max(S) = 22.486032, kmax = 50591
+Delta T = 103.610368 microsec
+Futasi ido: 33
+
+2 perces adatgyűjtés:
+MEAN(cbuff) = 1.12697e+08, VAR(cbuff) = 10613.7
+max(S) = 21.920465, kmax = 50591
+Delta T = 103.610368 microsec
+Futasi ido: 27
+
+MEAN(cbuff) = 1.09883e+08, VAR(cbuff) = 10475.5
+max(S) = 19.419682, kmax = 50591
+Delta T = 103.610368 microsec
+Futasi ido: 27
+
+MEAN(cbuff) = 1.08323e+08, VAR(cbuff) = 10404.9
+max(S) = 19.038896, kmax = 50591
+Delta T = 103.610368 microsec
+Futasi ido: 27
+
+MEAN(cbuff) = 6.66761e+08, VAR(cbuff) = 25804.7
+max(S) = 17.387461, kmax = 50599
+Delta T = 103.626752 microsec
+Futasi ido: 62
+Delta T = 103.610368 microsec
+Futasi ido: 27
+
+MEAN(cbuff) = 6.66761e+08, VAR(cbuff) = 25804.7
+max(S) = 17.387461, kmax = 50599
+Delta T = 103.626752 microsec
+Futasi ido: 62
+Delta T = 103.610368 microsec
+Futasi ido: 27
+
+MEAN(cbuff) = 6.66761e+08, VAR(cbuff) = 25804.7
+max(S) = 17.387461, kmax = 50599
+Delta T = 103.626752 microsec
+Futasi ido: 27
+
+5 perces adatgyűjtés:
+MEAN(cbuff) = 6.66761e+08, VAR(cbuff) = 25804.7
+max(S) = 17.387461, kmax = 50599
+Delta T = 103.626752 microsec
+Futasi ido: 62
+
+MEAN(cbuff) = 6.66761e+08, VAR(cbuff) = 25804.7
+max(S) = 17.387461, kmax = 50599
+Delta T = 103.626752 microsec
+Futasi ido: 62
+
+MEAN(cbuff) = 6.66761e+08, VAR(cbuff) = 25804.7
+max(S) = 17.387461, kmax = 50599
+Delta T = 103.626752 microsec
+Futasi ido: 62
+
+MEAN(cbuff) = 6.40399e+08, VAR(cbuff) = 25293.9
+max(S) = 17.147181, kmax = 1792585
+Delta T = 3671.214080 microsec
+Futasi ido: 75
+Delta T = 103.626752 microsec
+Futasi ido: 62
+
+MEAN(cbuff) = 6.40399e+08, VAR(cbuff) = 25293.9
+max(S) = 17.147181, kmax = 1792585
+Delta T = 3671.214080 microsec
+Futasi ido: 75
+
+MEAN(cbuff) = 6.40399e+08, VAR(cbuff) = 25293.9
+max(S) = 17.147181, kmax = 1792585
+Delta T = 3671.214080 microsec
+Futasi ido: 75
+
+MEAN(cbuff) = 6.31853e+08, VAR(cbuff) = 25135
+MEAN(cbuff) = 6.31853e+08, VAR(cbuff) = 25135
+max(S) = 19.663033, kmax = 50591
+Delta T = 103.610368 microsec
+Futasi ido: 62

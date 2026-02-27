@@ -306,6 +306,11 @@ int main(int argc, char **argv)
                 sendbuf += fs.start_time();
             }
 
+            if(fs.is_same_str(sendbuf.c_str(), "write")){
+                sendbuf += " ";
+                sendbuf += fs.start_time();
+            }
+
             iResult = send( ConnectSocket, sendbuf.c_str(), DEFAULT_BUFLEN, 0 );
 
             if (iResult == SOCKET_ERROR) {
@@ -400,6 +405,16 @@ int main(int argc, char **argv)
                 path.clear();
                 path << "\"" << pathbuffer << "\\timestamps_acquisition_bme.py\"";
                 fs.run(path.str());
+            }
+
+            else if(sendbuf.find("write") != std::string::npos){
+                std::istringstream iss(sendbuf);
+                std::string command, startTimeStr;
+                iss >> command >> startTimeStr;
+
+                fs.wait_until(startTimeStr.c_str());
+                
+                std::cout << fs.print_gpstime() << std::endl;
             }
 
             //ez a meres, a program megvarja a kezdes idopontjat es lefuttatja a merest
