@@ -24,21 +24,29 @@ DEFAULT_BIN_COUNT = 20
 DEFAULT_HISTOGRAMS = [1, 2, 3, 4]
 
 # Timestamp streaming settings
-COINCIDENCE_WINDOW_PS = 10000  # coincidence window in picoseconds
-TIMESTAMP_BUFFER_DURATION_SEC = 12.0  # Local buffer: must be longer than network pipeline delay (~6.5s) so old local data can overlap with delayed remote data
-REMOTE_BUFFER_DURATION_SEC = 12.0  # Remote buffer: accumulates multiple batch arrivals (batches arrive every ~6.5s, each covering ~3s)
+COINCIDENCE_WINDOW_PS = 2000  # coincidence window in picoseconds
+TIMESTAMP_BUFFER_DURATION_SEC = 30.0  # Local buffer: keep 30s so old local data can still overlap with bursty remote arrivals
+REMOTE_BUFFER_DURATION_SEC = 30.0  # Remote buffer: keep 30s to survive 10-15s gaps between remote data bursts
 TIMESTAMP_BUFFER_MAX_SIZE = 10_000_000  # Max timestamps per channel (safety limit)
 TIMESTAMP_BATCH_INTERVAL_SEC = 0.1  # Send batches to peer every 0.1 seconds (10 Hz)
+MAX_SEND_PER_CH = 50_000  # Max timestamps per channel per combined send. Keeps initial
+                           # burst messages under ~2 MB encrypted. Backlog drains in <1s.
 STREAM_PORTS_BASE = 4241  # Time Controller streaming ports: 4242, 4243, 4244, 4245
 
 # Live offset calibration
 # Duration in seconds to accumulate data before running FFT calibration
-CALIBRATION_DURATION_SEC = 30
+CALIBRATION_DURATION_SEC = 60
+
+# Time Controller command sent at live calibration start:
+TCBME_DELAY1_VALUE = 0
+TCBME_DELAY2_VALUE = 0
+TCWIGNER_DELAY1_VALUE = 0 
+TCWIGNER_DELAY4_VALUE = 0 
 
 # Live FFT calibration parameters — optimised for expected ~103 µs offset
 # tau=4096 ps, N=2^17=131072 → window ≈ 537 µs (±268 µs), resolution ≈ 4 ns
-LIVE_FFT_TAU = 4096
-LIVE_FFT_N = 2**17  # 131_072
+LIVE_FFT_TAU = 4096  # 2048 ps = 2.048 ns bin width for FFT calibration
+LIVE_FFT_N = 2**20  # 131_072
 
 # Mock Time Controller correlation mode (only used when real hardware unavailable)
 # 'cross_site': Site A and Site B detect same photon events (quantum entanglement)

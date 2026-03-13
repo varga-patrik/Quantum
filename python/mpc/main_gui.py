@@ -761,9 +761,59 @@ class App:
                 # Reload duration from config so changes take effect without restart
                 import importlib
                 import gui_components.config as _cfg_mod
+                from utils.common import zmq_exec
                 importlib.reload(_cfg_mod)
                 cal_duration = _cfg_mod.CALIBRATION_DURATION_SEC
                 logger.info(f"Calibration[Offset {offset_idx+1}]: duration reloaded = {cal_duration}s")
+
+                # Apply role-specific TC delay values before data accumulation.
+                if not is_mock_controller(self.tc):
+                    try:
+                        if self.computer_role == "computer_a":
+                            delay_commands = [
+                                ("delay1", _cfg_mod.TCWIGNER_DELAY1_VALUE),
+                                ("delay4", _cfg_mod.TCWIGNER_DELAY4_VALUE),
+                            ]
+                        else:
+                            delay_commands = [
+                                ("delay1", _cfg_mod.TCBME_DELAY1_VALUE),
+                                ("delay2", _cfg_mod.TCBME_DELAY2_VALUE),
+                            ]
+
+                        for cmd_name, cmd_value in delay_commands:
+                            tc_cmd = f"{cmd_name}:value {cmd_value}"
+                            zmq_exec(self.tc, tc_cmd)
+                            logger.info(
+                                "Calibration[Offset %d]: sent TC command %s",
+                                offset_idx + 1,
+                                tc_cmd,
+                            )
+                    except Exception as e:
+                        logger.warning(
+                            "Calibration[Offset %d]: failed to send TC delay commands: %s",
+                            offset_idx + 1,
+                            e,
+                        )
+
+                # In client mode, request the server peer to apply its own Wigner delays.
+                if self.computer_role != "computer_a":
+                    if self.peer_connection and self.peer_connection.is_connected():
+                        sent = self.peer_connection.send_command('APPLY_SERVER_TC_DELAYS', {})
+                        if sent:
+                            logger.info(
+                                "Calibration[Offset %d]: requested server to apply TC Wigner delay commands",
+                                offset_idx + 1,
+                            )
+                        else:
+                            logger.warning(
+                                "Calibration[Offset %d]: failed to request server TC delay apply",
+                                offset_idx + 1,
+                            )
+                    else:
+                        logger.warning(
+                            "Calibration[Offset %d]: no peer connection, cannot request server TC delay apply",
+                            offset_idx + 1,
+                        )
 
                 # --- Phase 1: Accumulate data ---
                 # Clear the relevant buffers so we get fresh data only

@@ -16,6 +16,7 @@ from gui_components.config import (
     TIMESTAMP_BUFFER_DURATION_SEC,
     TIMESTAMP_BUFFER_MAX_SIZE,
     TIMESTAMP_BATCH_INTERVAL_SEC,
+    MAX_SEND_PER_CH,
     DEBUG_MODE
 )
 
@@ -82,9 +83,11 @@ class PlotUpdater:
         self._file_tail_threads: dict[int, threading.Thread] = {}
         self._file_tail_offsets: dict[int, int] = {1: 0, 2: 0, 3: 0, 4: 0}
         
-        # Batch sending for peer exchange
-        self.last_batch_send_time = time.time()
+        # Batch sending for peer exchange — runs on its own fast thread,
+        # decoupled from the slow plot-update loop which can take seconds.
         self.last_sent_timestamp = {1: 0, 2: 0, 3: 0, 4: 0}  # Track the last timestamp value sent per channel
+        self._sender_stop_event = threading.Event()
+        self._sender_thread: Optional[threading.Thread] = None
 
     def start_streaming(self, tc_address: str, is_mock: bool = False, 
                        local_save_channels: list = None, remote_save_channels: list = None):
@@ -285,6 +288,19 @@ class PlotUpdater:
             self._start_file_tail_threads()  # Read timestamps from DLT output files
             logger.info("File tailing ENABLED - reading timestamps from DLT output files")
         logger.info("Timestamp streaming started for all channels (file tailing enabled for live reading)")
+        
+        # Start dedicated sender thread (only on Wigner / computer_a)
+        # This runs independently of the slow plot-update loop so that
+        # timestamps are shipped every TIMESTAMP_BATCH_INTERVAL_SEC even
+        # when coincidence calculations take several seconds.
+        if (self.app_ref and hasattr(self.app_ref, 'computer_role')
+                and self.app_ref.computer_role == "computer_a"):
+            self._sender_stop_event.clear()
+            self._sender_thread = threading.Thread(
+                target=self._sender_loop, daemon=True, name="TimestampSender")
+            self._sender_thread.start()
+            logger.info("Timestamp sender thread started (interval=%.2fs)",
+                        TIMESTAMP_BATCH_INTERVAL_SEC)
     
     def stop_streaming(self):
         """Stop timestamp streaming and DLT acquisitions."""
@@ -296,6 +312,13 @@ class PlotUpdater:
         self.streaming_active = False
         
         logger.info("Stopping timestamp streaming")
+        
+        # Stop sender thread first so no more sends happen during cleanup
+        self._sender_stop_event.set()
+        if self._sender_thread and self._sender_thread.is_alive():
+            self._sender_thread.join(timeout=2.0)
+            logger.info("Timestamp sender thread stopped")
+        self._sender_thread = None
         
         # Stop file-tail threads (if used)
         self._stop_file_tail_threads()
@@ -492,65 +515,98 @@ class PlotUpdater:
         except Exception as e:
             logger.error(f"Error processing timestamp batch for channel {channel}: {e}", exc_info=True)
     
+    def _sender_loop(self):
+        """Dedicated sender thread: sends timestamp batches at a fixed interval.
+        
+        Runs independently of the slow plot-update loop (which can take
+        seconds due to coincidence calculations), ensuring timestamps are
+        shipped every TIMESTAMP_BATCH_INTERVAL_SEC.
+        """
+        logger.info("Sender thread running")
+        while not self._sender_stop_event.is_set():
+            try:
+                t0 = time.time()
+                self._send_timestamp_batch_to_peer()
+                elapsed = time.time() - t0
+                if elapsed > 0.5:
+                    logger.warning("Sender iteration took %.1fs (target %.1fs)",
+                                   elapsed, TIMESTAMP_BATCH_INTERVAL_SEC)
+            except Exception as e:
+                logger.error(f"Sender thread error: {e}", exc_info=True)
+            self._sender_stop_event.wait(TIMESTAMP_BATCH_INTERVAL_SEC)
+        logger.info("Sender thread exiting")
+    
     def _send_timestamp_batch_to_peer(self):
-        """Send local timestamp batches to peer for cross-site correlation."""
+        """Send local timestamp batches to peer for cross-site correlation.
+        
+        All channels are packed into ONE message to minimise per-message
+        overhead (encryption, TCP round-trip, sendall flush).  Per-channel
+        data is capped at MAX_SEND_PER_CH (oldest first) so the initial
+        burst stays under ~2 MB.  Trackers are only advanced on success;
+        on failure everything is rolled back for retry on the next cycle.
+        """
         if self.peer_connection is None or not self.peer_connection.is_connected():
             return
         
-        try:
-            import base64
-            import zlib
-            
-            # Send only NEW timestamps since last batch (prevent re-sending same data)
-            # Uses TIMESTAMP-BASED tracking: immune to buffer trimming/cleanup
-            batch_data = {}
-            total_ts = 0
-            for channel in [1, 2, 3, 4]:
+        import base64
+        import zlib
+        
+        batch_data = {}
+        total_ts = 0
+        saved_trackers = dict(self.last_sent_timestamp)
+        
+        for channel in [1, 2, 3, 4]:
+            try:
                 all_timestamps, all_ref_seconds = self.local_buffers[channel].get_timestamps_with_ref()
                 
                 if len(all_timestamps) == 0:
                     continue
                 
-                # Only send timestamps NEWER than the last one we sent
-                # This is immune to buffer trimming (no index tracking needed)
                 last_ts = self.last_sent_timestamp[channel]
                 mask = all_timestamps > last_ts
                 new_timestamps = all_timestamps[mask]
                 new_ref_seconds = all_ref_seconds[mask]
                 
-                if len(new_timestamps) > 0:
-                    # Update tracking with the latest timestamp value
-                    self.last_sent_timestamp[channel] = int(all_timestamps[-1])
-                    
-                    # Convert timestamps to binary (much more efficient than JSON)
-                    ts_binary = new_timestamps.tobytes()
-                    ref_binary = new_ref_seconds.tobytes()
-                    
-                    # Compress both arrays
-                    ts_compressed = zlib.compress(ts_binary, level=1)
-                    ref_compressed = zlib.compress(ref_binary, level=1)
-                    
-                    # Encode as base64 for JSON transport
-                    ts_encoded = base64.b64encode(ts_compressed).decode('ascii')
-                    ref_encoded = base64.b64encode(ref_compressed).decode('ascii')
-                    
-                    batch_data[channel] = {
-                        'data': ts_encoded,
-                        'ref_data': ref_encoded,
-                        'count': len(new_timestamps)
-                    }
-                    total_ts += len(new_timestamps)
-            
-            if batch_data and total_ts > 0:
-                # Send timestamp batch to peer
-                success = self.peer_connection.send_command('TIMESTAMP_BATCH', {
-                    'timestamps': batch_data,
-                    'time': time.time()
-                })
-                if success:
-                    logger.debug(f"Sent timestamp batch: {total_ts} total timestamps")
-        except Exception as e:
-            logger.warning(f"Could not send timestamp batch to peer: {e}")
+                if len(new_timestamps) == 0:
+                    continue
+                
+                # Cap per-channel: send OLDEST first so nothing is skipped.
+                if len(new_timestamps) > MAX_SEND_PER_CH:
+                    new_timestamps = new_timestamps[:MAX_SEND_PER_CH]
+                    new_ref_seconds = new_ref_seconds[:MAX_SEND_PER_CH]
+                
+                # Optimistically advance tracker (rolled back on send failure)
+                self.last_sent_timestamp[channel] = int(new_timestamps[-1])
+                
+                # Compress + encode
+                ts_encoded = base64.b64encode(
+                    zlib.compress(new_timestamps.tobytes(), level=1)
+                ).decode('ascii')
+                ref_encoded = base64.b64encode(
+                    zlib.compress(new_ref_seconds.tobytes(), level=1)
+                ).decode('ascii')
+                
+                batch_data[channel] = {
+                    'data': ts_encoded,
+                    'ref_data': ref_encoded,
+                    'count': len(new_timestamps)
+                }
+                total_ts += len(new_timestamps)
+            except Exception as e:
+                logger.warning(f"Ch{channel}: prepare error: {e}")
+        
+        if batch_data and total_ts > 0:
+            success = self.peer_connection.send_command('TIMESTAMP_BATCH', {
+                'timestamps': batch_data,
+                'time': time.time()
+            })
+            if success:
+                if DEBUG_MODE:
+                    logger.debug(f"Sent batch: {total_ts} ts across {len(batch_data)} ch")
+            else:
+                # Roll back ALL trackers so everything is retried next cycle
+                self.last_sent_timestamp = saved_trackers
+                logger.warning(f"Send failed ({total_ts} ts), will retry")
     
     def _update_measurements(self):
         """Update coincidence counts from timestamp buffers."""
@@ -568,14 +624,9 @@ class PlotUpdater:
             # Calculate cross-site coincidences (both sites do this with their local+remote data)
             self._calculate_coincidences()
             
-            # ONE-WAY TCP: Only send timestamps from Wigner (server/computer_a) to BME (client/computer_b)
-            # Wigner has ~10x fewer timestamps, so it's the sender
-            if self.app_ref and hasattr(self.app_ref, 'computer_role'):
-                if self.app_ref.computer_role == "computer_a":  # Wigner (server)
-                    current_time = time.time()
-                    if current_time - self.last_batch_send_time >= TIMESTAMP_BATCH_INTERVAL_SEC:
-                        self._send_timestamp_batch_to_peer()
-                        self.last_batch_send_time = current_time
+            # Timestamp sending is handled by the dedicated _sender_thread
+            # (started in start_streaming), so nothing to do here.
+            pass
         else:
             # Not streaming yet, show placeholder
             pass

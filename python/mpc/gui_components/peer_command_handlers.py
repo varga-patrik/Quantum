@@ -29,6 +29,7 @@ class PeerCommandHandlers:
         peer_connection.register_command_handler('COUNTER_DATA', self.handle_counter_data)
         peer_connection.register_command_handler('SAVE_SETTINGS_UPDATE', self.handle_save_settings_update)
         peer_connection.register_command_handler('SAVE_SETTINGS_REQUEST', self.handle_save_settings_request)
+        peer_connection.register_command_handler('APPLY_SERVER_TC_DELAYS', self.handle_apply_server_tc_delays)
         logger.info("Registered all peer command handlers")
     
     # Optimization control handlers
@@ -220,3 +221,34 @@ class PeerCommandHandlers:
                 self.app._on_local_save_changed()
         except Exception as e:
             logger.error(f"Error handling save settings request: {e}")
+
+    def handle_apply_server_tc_delays(self, data: dict):
+        """Handle request to apply server-side TC delay settings."""
+        try:
+            # Only server side (Wigner/computer_a) should execute this request.
+            if getattr(self.app, 'computer_role', None) != 'computer_a':
+                logger.warning("Ignoring APPLY_SERVER_TC_DELAYS on non-server role")
+                return
+
+            from mock_time_controller import is_mock_controller
+            if not hasattr(self.app, 'tc') or is_mock_controller(self.app.tc):
+                logger.warning("Cannot apply server TC delays: TC unavailable or mock mode")
+                return
+
+            import importlib
+            import gui_components.config as _cfg_mod
+            from utils.common import zmq_exec
+
+            importlib.reload(_cfg_mod)
+            delay_commands = [
+                ("delay1", _cfg_mod.TCWIGNER_DELAY1_VALUE),
+                ("delay4", _cfg_mod.TCWIGNER_DELAY4_VALUE),
+            ]
+
+            for cmd_name, cmd_value in delay_commands:
+                tc_cmd = f"{cmd_name}:value {cmd_value}"
+                zmq_exec(self.app.tc, tc_cmd)
+                logger.info("Applied server TC command from peer request: %s", tc_cmd)
+
+        except Exception as e:
+            logger.error(f"Error handling APPLY_SERVER_TC_DELAYS: {e}")

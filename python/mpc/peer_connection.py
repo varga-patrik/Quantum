@@ -1,6 +1,7 @@
 """Peer-to-peer TCP connection for distributed MPC320 control."""
 
 import socket
+import select
 import threading
 import json
 import logging
@@ -64,6 +65,10 @@ class PeerConnection:
         # Message handling
         self.command_handlers: Dict[str, Callable] = {}
         self.last_heartbeat = time.time()
+        
+        # Thread-safe send lock — prevents heartbeat and data threads from
+        # interleaving sendall() calls, which corrupts \n-delimited framing
+        self._send_lock = threading.Lock()
         
         if DEBUG_MODE:
             logger.info("PeerConnection initialized: mode=%s, server_ip=%s, port=%d (encrypted)", mode, server_ip, port)
@@ -370,7 +375,12 @@ class PeerConnection:
                 break
     
     def _receiver_loop(self):
-        """Receiver thread: continuously receive and process messages."""
+        """Receiver thread: continuously receive and process messages.
+        
+        Uses select() for non-blocking polling instead of settimeout().
+        This avoids a race condition where settimeout(1.0) here would
+        stomp on the send timeout set by send_command() on another thread.
+        """
         buffer = ""
         
         while not self.stop_event.is_set() and self.connected:
@@ -378,7 +388,13 @@ class PeerConnection:
                 if self.peer_socket is None:
                     break
                 
-                self.peer_socket.settimeout(1.0)
+                # Use select() to wait for data with 1s timeout.
+                # This does NOT touch the socket's timeout setting,
+                # so send_command() can safely set its own timeout.
+                ready, _, _ = select.select([self.peer_socket], [], [], 1.0)
+                if not ready:
+                    continue  # Timeout — check stop_event and loop
+                
                 data = self.peer_socket.recv(BUFFER_SIZE)
                 
                 if not data:
@@ -425,15 +441,21 @@ class PeerConnection:
             logger.error("Message processing error: %s", e)
     
     def _heartbeat_loop(self):
-        """Heartbeat thread: periodically send keep-alive messages."""
+        """Heartbeat thread: periodically send keep-alive messages.
+        
+        Uses non-blocking lock acquisition so a long data send
+        doesn't block heartbeats → preventing false timeouts.
+        """
         while not self.stop_event.is_set() and self.connected:
             try:
                 self.send_command('HEARTBEAT', {})
                 time.sleep(HEARTBEAT_INTERVAL)
                 
-                # Check if peer is alive
-                if time.time() - self.last_heartbeat > HEARTBEAT_INTERVAL * 3:
-                    logger.warning("Peer heartbeat timeout")
+                # Check if peer is alive — 5× interval gives plenty of margin
+                # for when large sends temporarily block heartbeat delivery
+                if time.time() - self.last_heartbeat > HEARTBEAT_INTERVAL * 5:
+                    logger.warning("Peer heartbeat timeout (no heartbeat for %.0fs)",
+                                   time.time() - self.last_heartbeat)
                     self.connected = False
                     break
                     
@@ -444,6 +466,13 @@ class PeerConnection:
     
     def send_command(self, command: str, data: Dict[str, Any], large: bool = False) -> bool:
         """Send an encrypted command to the peer with timeout protection.
+        
+        Thread-safe: uses _send_lock to prevent heartbeat and data threads
+        from interleaving sendall() calls on the same socket.
+        
+        Heartbeat commands use non-blocking lock acquisition: if a data send
+        is in progress the heartbeat is silently skipped rather than queuing
+        up behind a potentially multi-second send.
         
         Args:
             command: Command type string
@@ -460,19 +489,31 @@ class PeerConnection:
             encrypted = self.secure_channel.encrypt_message(message)
             payload = (encrypted + '\n').encode('utf-8')
             
-            # Set socket to non-blocking temporarily with timeout
-            old_timeout = self.peer_socket.gettimeout()
-            self.peer_socket.settimeout(timeout)
+            # For heartbeats: try to acquire lock without blocking.
+            # If a big data send is in progress, skip rather than queue.
+            # This prevents the heartbeat thread from stalling, which would
+            # make the REMOTE peer's heartbeat check falsely time out.
+            if command == 'HEARTBEAT':
+                acquired = self._send_lock.acquire(blocking=False)
+                if not acquired:
+                    # Lock busy (data send in progress) — skip this heartbeat
+                    return True
+            else:
+                self._send_lock.acquire()
             
             try:
+                self.peer_socket.settimeout(timeout)
                 self.peer_socket.sendall(payload)
-                return True
             finally:
-                # Restore original timeout
-                self.peer_socket.settimeout(old_timeout)
+                self._send_lock.release()
+            
+            if DEBUG_MODE and command != 'HEARTBEAT':
+                logger.debug("Sent %s: %d bytes", command, len(payload))
+            return True
                 
         except socket.timeout:
-            logger.error("Send command timeout after %.1fs for command: %s", timeout, command)
+            logger.error("Send command timeout after %.1fs for command: %s (%d bytes)", 
+                        timeout, command, len(payload) if 'payload' in dir() else 0)
             return False
         except Exception as e:
             logger.error("Send command error: %s", e)

@@ -32,7 +32,7 @@ class FSUtil{
         inet_pton(AF_INET, ip_text.c_str(), &ip);
         output_file = output;
         if(fs740_connect(ip)){
-            std::cout << "Connection Succeeded" << std::endl;
+            std::cout << "Connection Succeeded to FS740" << std::endl;
             connected = true;
         }
         else{
