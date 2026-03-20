@@ -674,20 +674,30 @@ class App:
                 self._calibration_status_labels[ofs_idx] = status
                 self._pair_row_widgets.append(status)
 
-        #Add one last calibrate all button
-        btn = tk.Button(self.pair_rows_frame, text="🔬 Calibrate All", 
-                                                                         background='#9C27B0', foreground='white',
-                                        command=self._start_live_calibration_for_all_inputs).grid(row=len(self.correlation_pairs) + 1, 
-                                                                                                  column=3, padx=2, pady=1)
-        self._calibrate_buttons[len(self.correlation_pairs)] = btn
+        # Add one dedicated "calibrate all" button/label row.
+        all_key = "all"
+        btn = tk.Button(
+            self.pair_rows_frame,
+            text="🔬 Calibrate All",
+            background='#9C27B0',
+            foreground='white',
+            command=self._start_live_calibration_for_all_inputs,
+        )
+        btn.grid(row=len(self.correlation_pairs) + 1, column=3, padx=2, pady=1)
+        self._calibrate_buttons[all_key] = btn
         self._pair_row_widgets.append(btn)
 
         # Status label for calibrate all
-        label = tk.Label(self.pair_rows_frame, text="not set",
-                                                                                font=('Arial', 8), foreground='#666', width=30, 
-                                                                                anchor='w').grid(row=len(self.correlation_pairs) + 1, 
-                                                                                column=4, sticky="w", padx=2)
-        self._calibration_status_labels[len(self.correlation_pairs)] = label
+        label = tk.Label(
+            self.pair_rows_frame,
+            text="not set",
+            font=('Arial', 8),
+            foreground='#666',
+            width=30,
+            anchor='w',
+        )
+        label.grid(row=len(self.correlation_pairs) + 1, column=4, sticky="w", padx=2)
+        self._calibration_status_labels[all_key] = label
         self._pair_row_widgets.append(label)
         
 
@@ -895,29 +905,26 @@ class App:
             then the FFT is computed.
             """
             import threading
+            all_key = "all"
 
             # Check streaming is active
             if not hasattr(self, 'plot_updater') or not self.plot_updater.streaming_active:
-                # Update status for the last offset slot (used for "Calibrate All" status display)
-                if self._calibration_status_labels:
-                    last_offset_idx = len(self._calibration_status_labels) - 1
-                    self._calibration_status_labels[last_offset_idx].config(
+                if all_key in self._calibration_status_labels:
+                    self._calibration_status_labels[all_key].config(
                         text="⚠️ Start streaming first!", foreground='#D32F2F')
                 logger.warning("Cannot calibrate — streaming not active")
                 return
 
             # Check not already running for for any slot
-            if any(offset_idx in self._calibration_threads and self._calibration_threads[offset_idx].is_alive() for offset_idx in self._calibration_threads):
+            if any(thread.is_alive() for thread in self._calibration_threads.values()):
                 logger.warning("Calibration already running for one or more offset slots")
                 return
 
-            # Disable button, update status for the "Calibrate All" status label (using the last offset slot's label for display)
-            if self._calibrate_buttons:
-                last_offset_idx = len(self._calibrate_buttons) - 1
-                self._calibrate_buttons[last_offset_idx].config(state='disabled', text="⏳ Wait…")
-            if self._calibration_status_labels:
-                last_offset_idx = len(self._calibration_status_labels) - 1
-                self._calibration_status_labels[last_offset_idx].config(
+            # Disable button and update dedicated "Calibrate All" status label.
+            if all_key in self._calibrate_buttons:
+                self._calibrate_buttons[all_key].config(state='disabled', text="⏳ Wait…")
+            if all_key in self._calibration_status_labels:
+                self._calibration_status_labels[all_key].config(
                     text="Starting calibration…",
                     foreground='#1565C0')
 
@@ -986,14 +993,16 @@ class App:
                     # Wait, updating countdown on UI
                     for elapsed in range(cal_duration):
                         if not self.plot_updater.streaming_active:
-                            self.root.after(0, lambda: self._calibration_status_labels.get(len(self._calibration_status_labels) - 1) and
-                                            self._calibration_status_labels[len(self._calibration_status_labels) - 1].config(
+                            self.root.after(0, lambda: self._calibration_status_labels.get(all_key) and
+                                            self._calibration_status_labels[all_key].config(
                                                 text="⚠️ Streaming stopped", foreground='#D32F2F'))
+                            self.root.after(0, lambda: self._calibrate_buttons.get(all_key) and
+                                            self._calibrate_buttons[all_key].config(state='normal', text="🔬 Calibrate All"))
                             return
                         remaining = cal_duration - elapsed
                         self.root.after(0, lambda r=remaining, d=cal_duration: (
-                            self._calibration_status_labels.get(len(self._calibration_status_labels) - 1) and
-                            self._calibration_status_labels[len(self._calibration_status_labels) - 1].config(
+                            self._calibration_status_labels.get(all_key) and
+                            self._calibration_status_labels[all_key].config(
                                 text=f"Accumulating data… {d - r}/{d}s",
                                 foreground='#1565C0')
                         ))
@@ -1001,8 +1010,8 @@ class App:
 
                     # --- Phase 2: Snapshot buffers and run FFT ---
                     self.root.after(0, lambda: (
-                        self._calibration_status_labels.get(len(self._calibration_status_labels) - 1) and
-                        self._calibration_status_labels[len(self._calibration_status_labels) - 1].config(
+                        self._calibration_status_labels.get(all_key) and
+                        self._calibration_status_labels[all_key].config(
                             text="Computing FFT…", foreground='#6A1B9A')
                     ))
 
@@ -1015,15 +1024,20 @@ class App:
                     # --- Phase 3: Apply result for all offsets ---
                     for idx in range(4):
                         self.root.after(0, lambda: self._apply_calibration_result(idx, result))
+                    self.root.after(0, lambda: self._calibrate_buttons.get(all_key) and
+                                    self._calibrate_buttons[all_key].config(state='normal', text="🔬 Calibrate All"))
 
                 except Exception as e:
                     logger.error(f"Calibration failed for offsets: {e}", exc_info=True)
-                    self.root.after(0, lambda: self._apply_calibration_result(
-                        len(self._calibration_status_labels) - 1, CalibrationResult(success=False, message=str(e))))
+                    self.root.after(0, lambda: self._calibration_status_labels.get(all_key) and
+                                    self._calibration_status_labels[all_key].config(
+                                        text=f"❌ Failed: {e}", foreground='#D32F2F'))
+                    self.root.after(0, lambda: self._calibrate_buttons.get(all_key) and
+                                    self._calibrate_buttons[all_key].config(state='normal', text="🔬 Calibrate All"))
 
             thread = threading.Thread(target=_calibration_worker, daemon=True,
                                     name=f"LiveCalibrate-OfsAll")
-            self._calibration_threads[len(self._calibration_threads)] = thread
+            self._calibration_threads[all_key] = thread
             thread.start()
 
 
