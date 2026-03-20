@@ -240,12 +240,27 @@ class PeerCommandHandlers:
             from utils.common import zmq_exec
 
             importlib.reload(_cfg_mod)
+            payload_delays = data.get('wigner_delays', {}) if isinstance(data, dict) else {}
+            payload_enabled = data.get('wigner_enabled', {}) if isinstance(data, dict) else {}
+
+            def _get_delay(name: str, cfg_default: int) -> int:
+                raw = payload_delays.get(name, cfg_default)
+                try:
+                    return int(raw)
+                except (TypeError, ValueError):
+                    return int(cfg_default)
+
             delay_commands = [
-                ("delay1", _cfg_mod.TCWIGNER_DELAY1_VALUE),
-                ("delay4", _cfg_mod.TCWIGNER_DELAY4_VALUE),
+                ("delay1", _get_delay("delay1", _cfg_mod.TCWIGNER_DELAY1_VALUE)),
+                ("delay2", _get_delay("delay2", _cfg_mod.TCWIGNER_DELAY2_VALUE)),
+                ("delay3", _get_delay("delay3", _cfg_mod.TCWIGNER_DELAY3_VALUE)),
+                ("delay4", _get_delay("delay4", _cfg_mod.TCWIGNER_DELAY4_VALUE)),
             ]
 
             for cmd_name, cmd_value in delay_commands:
+                if isinstance(payload_enabled, dict) and cmd_name in payload_enabled:
+                    if not bool(payload_enabled.get(cmd_name)):
+                        continue
                 tc_cmd = f"{cmd_name}:value {cmd_value}"
                 zmq_exec(self.app.tc, tc_cmd)
                 logger.info("Applied server TC command from peer request: %s", tc_cmd)

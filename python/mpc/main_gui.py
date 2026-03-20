@@ -501,6 +501,7 @@ class App:
         self._build_plot_controls()
         self._build_correlation_pair_selector()
         self._build_time_offset_config()
+        self._build_tc_delay_config()
         
         # Build live counters panel
         self._build_live_counters()
@@ -1138,6 +1139,201 @@ class App:
         
         # Update all status displays
         self._update_time_offset_status()
+
+    def _build_tc_delay_config(self):
+        """Build editable TC delay panel (8 config-backed values + apply button)."""
+        import gui_components.config as _cfg_mod
+
+        delay_frame = tk.LabelFrame(self.tab_plot_left, text="TC Delays (ps)",
+                                    font=('Arial', 10, 'bold'),
+                                    relief=tk.GROOVE, bd=2, padx=10, pady=8)
+        delay_frame.grid(row=3, column=1, sticky="ew", padx=5, pady=5)
+
+        tk.Label(delay_frame,
+                 text="Invalid/empty input falls back to config defaults",
+                 font=('Arial', 9)).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 5))
+
+        self.tc_delay_keys = [
+            "TCBME_DELAY1_VALUE", "TCBME_DELAY2_VALUE", "TCBME_DELAY3_VALUE", "TCBME_DELAY4_VALUE",
+            "TCWIGNER_DELAY1_VALUE", "TCWIGNER_DELAY2_VALUE", "TCWIGNER_DELAY3_VALUE", "TCWIGNER_DELAY4_VALUE",
+        ]
+        self.tc_delay_entries = {}
+        self.tc_delay_enabled = {}
+
+        for i, key in enumerate(self.tc_delay_keys, start=1):
+            enabled_var = tk.BooleanVar(value=True)
+            tk.Checkbutton(delay_frame, variable=enabled_var).grid(
+                row=i, column=0, sticky="w", padx=(2, 0), pady=1)
+            self.tc_delay_enabled[key] = enabled_var
+
+            tk.Label(delay_frame, text=f"{key}:", font=('Arial', 9, 'bold')).grid(
+                row=i, column=0, sticky="e", padx=(20, 5), pady=1)
+            entry = tk.Entry(delay_frame, width=16, font=('Courier New', 10))
+            entry.grid(row=i, column=1, sticky="w", padx=5, pady=1)
+            entry.insert(0, str(getattr(_cfg_mod, key, 0)))
+            self.tc_delay_entries[key] = entry
+
+        tk.Button(delay_frame, text="Apply TC Delays",
+                  background='#2196F3', foreground='white',
+                  font=('Arial', 9, 'bold'), width=16,
+                  command=self._apply_tc_delays_from_ui).grid(
+            row=len(self.tc_delay_keys) + 1, column=0, columnspan=2, pady=(8, 2))
+
+        self.tc_delay_status_label = tk.Label(delay_frame, text="", font=('Arial', 8), foreground='#555')
+        self.tc_delay_status_label.grid(row=len(self.tc_delay_keys) + 2, column=0, columnspan=3,
+                                        sticky="w", padx=5)
+
+    def _apply_tc_delays_from_ui(self):
+        """Apply local role-specific TC delays from UI, with config fallback on invalid input."""
+        import importlib
+        import gui_components.config as _cfg_mod
+        from utils.common import zmq_exec
+
+        importlib.reload(_cfg_mod)
+
+        values = {}
+        fallback_keys = []
+        for key, entry in self.tc_delay_entries.items():
+            default_val = int(getattr(_cfg_mod, key, 0))
+            raw = entry.get().strip()
+            try:
+                val = int(float(raw)) if raw else default_val
+                if not raw:
+                    fallback_keys.append(key)
+            except ValueError:
+                val = default_val
+                fallback_keys.append(key)
+
+            values[key] = val
+            entry.delete(0, tk.END)
+            entry.insert(0, str(val))
+
+        enabled_keys = {
+            key for key, var in self.tc_delay_enabled.items()
+            if var.get()
+        }
+
+        if not enabled_keys:
+            msg = "No TC delays selected (all checkboxes are off)"
+            if hasattr(self, 'tc_delay_status_label'):
+                self.tc_delay_status_label.config(text=msg, foreground='#F57C00')
+            logger.warning(msg)
+            return
+
+        if is_mock_controller(self.tc):
+            msg = "Mock TC active: delays validated in UI only"
+            if fallback_keys:
+                msg += f" (fallback on {len(fallback_keys)} field(s))"
+            if hasattr(self, 'tc_delay_status_label'):
+                self.tc_delay_status_label.config(text=msg, foreground='#F57C00')
+            logger.warning(msg)
+            return
+
+        if self.computer_role == "computer_a":
+            all_delay_commands = [
+                ("delay1", values["TCWIGNER_DELAY1_VALUE"]),
+                ("delay2", values["TCWIGNER_DELAY2_VALUE"]),
+                ("delay3", values["TCWIGNER_DELAY3_VALUE"]),
+                ("delay4", values["TCWIGNER_DELAY4_VALUE"]),
+            ]
+            role_key_order = [
+                "TCWIGNER_DELAY1_VALUE", "TCWIGNER_DELAY2_VALUE",
+                "TCWIGNER_DELAY3_VALUE", "TCWIGNER_DELAY4_VALUE",
+            ]
+            role_name = "Wigner"
+        else:
+            all_delay_commands = [
+                ("delay1", values["TCBME_DELAY1_VALUE"]),
+                ("delay2", values["TCBME_DELAY2_VALUE"]),
+                ("delay3", values["TCBME_DELAY3_VALUE"]),
+                ("delay4", values["TCBME_DELAY4_VALUE"]),
+            ]
+            role_key_order = [
+                "TCBME_DELAY1_VALUE", "TCBME_DELAY2_VALUE",
+                "TCBME_DELAY3_VALUE", "TCBME_DELAY4_VALUE",
+            ]
+            role_name = "BME"
+
+        # Keep command order deterministic and apply only checked fields.
+        key_to_cmd = {
+            "TCBME_DELAY1_VALUE": "delay1",
+            "TCBME_DELAY2_VALUE": "delay2",
+            "TCBME_DELAY3_VALUE": "delay3",
+            "TCBME_DELAY4_VALUE": "delay4",
+            "TCWIGNER_DELAY1_VALUE": "delay1",
+            "TCWIGNER_DELAY2_VALUE": "delay2",
+            "TCWIGNER_DELAY3_VALUE": "delay3",
+            "TCWIGNER_DELAY4_VALUE": "delay4",
+        }
+        selected_role_keys = [k for k in role_key_order if k in enabled_keys]
+        delay_commands = [(key_to_cmd[k], values[k]) for k in selected_role_keys]
+
+        try:
+            for cmd_name, cmd_value in delay_commands:
+                tc_cmd = f"{cmd_name}:value {cmd_value}"
+                zmq_exec(self.tc, tc_cmd)
+                logger.info("TC Delay UI: sent %s", tc_cmd)
+
+            status_text = f"Applied {len(delay_commands)} {role_name} TC delay(s)"
+            if fallback_keys:
+                status_text += f" (fallback on {len(fallback_keys)} field(s))"
+            if hasattr(self, 'tc_delay_status_label'):
+                self.tc_delay_status_label.config(text=status_text, foreground='#2E7D32')
+            logger.info(status_text)
+
+            # If we're on client/BME, forward Wigner delay values to server for remote apply.
+            if self.computer_role != "computer_a":
+                if self.peer_connection and self.peer_connection.is_connected():
+                    wigner_enabled = {
+                        "TCWIGNER_DELAY1_VALUE", "TCWIGNER_DELAY2_VALUE",
+                        "TCWIGNER_DELAY3_VALUE", "TCWIGNER_DELAY4_VALUE",
+                    }
+                    selected_wigner_keys = [k for k in sorted(wigner_enabled) if k in enabled_keys]
+                    payload = {
+                        "wigner_delays": {
+                            "delay1": values["TCWIGNER_DELAY1_VALUE"],
+                            "delay2": values["TCWIGNER_DELAY2_VALUE"],
+                            "delay3": values["TCWIGNER_DELAY3_VALUE"],
+                            "delay4": values["TCWIGNER_DELAY4_VALUE"],
+                        },
+                        "wigner_enabled": {
+                            "delay1": "TCWIGNER_DELAY1_VALUE" in selected_wigner_keys,
+                            "delay2": "TCWIGNER_DELAY2_VALUE" in selected_wigner_keys,
+                            "delay3": "TCWIGNER_DELAY3_VALUE" in selected_wigner_keys,
+                            "delay4": "TCWIGNER_DELAY4_VALUE" in selected_wigner_keys,
+                        },
+                    }
+                    sent = self.peer_connection.send_command('APPLY_SERVER_TC_DELAYS', payload)
+                    if sent:
+                        remote_msg = "Requested remote Wigner delay apply"
+                        if hasattr(self, 'tc_delay_status_label'):
+                            self.tc_delay_status_label.config(
+                                text=f"{status_text} | {remote_msg}",
+                                foreground='#2E7D32'
+                            )
+                        logger.info("%s with payload: %s", remote_msg, payload["wigner_delays"])
+                    else:
+                        warn_msg = "Failed to request remote Wigner delay apply"
+                        if hasattr(self, 'tc_delay_status_label'):
+                            self.tc_delay_status_label.config(
+                                text=f"{status_text} | {warn_msg}",
+                                foreground='#F57C00'
+                            )
+                        logger.warning(warn_msg)
+                else:
+                    warn_msg = "No peer connection: cannot apply remote Wigner delays"
+                    if hasattr(self, 'tc_delay_status_label'):
+                        self.tc_delay_status_label.config(
+                            text=f"{status_text} | {warn_msg}",
+                            foreground='#F57C00'
+                        )
+                    logger.warning(warn_msg)
+
+        except Exception as e:
+            err = f"Failed to apply TC delays: {e}"
+            if hasattr(self, 'tc_delay_status_label'):
+                self.tc_delay_status_label.config(text=err, foreground='#D32F2F')
+            logger.error(err)
     
     def _save_time_offset_ui(self, idx=0):
         """Save time offset from UI input for the given slot (0-3)."""

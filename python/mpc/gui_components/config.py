@@ -24,7 +24,7 @@ DEFAULT_BIN_COUNT = 20
 DEFAULT_HISTOGRAMS = [1, 2, 3, 4]
 
 # Timestamp streaming settings
-COINCIDENCE_WINDOW_PS = 1000  # coincidence window in picoseconds
+COINCIDENCE_WINDOW_PS = 2000  # coincidence window in picoseconds
 TIMESTAMP_BUFFER_DURATION_SEC = 30.0  # Local buffer: keep 30s so old local data can still overlap with bursty remote arrivals
 REMOTE_BUFFER_DURATION_SEC = 30.0  # Remote buffer: keep 30s to survive 10-15s gaps between remote data bursts
 TIMESTAMP_BUFFER_MAX_SIZE = 10_000_000  # Max timestamps per channel (safety limit)
