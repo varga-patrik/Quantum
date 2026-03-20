@@ -223,7 +223,7 @@ class LiveOffsetCalibrator:
     #  Calibrate all offset slots that have at least one pair using them
     # ------------------------------------------------------------------
 
-    def calibrate_all(
+    def calibrate_all_pairs(
         self,
         pairs: list,
         local_buffers: dict,
@@ -263,3 +263,38 @@ class LiveOffsetCalibrator:
             results[ofs_idx] = self.calibrate_pair(ts_a, ts_b)
 
         return results
+
+# ---------------------------------------------------------------------------
+# Calibrate all active channels as one batch
+# ---------------------------------------------------------------------------
+
+    def calibrate_all_as_one(
+        self,
+        local_buffers: dict,
+        remote_buffers: dict,
+    ) -> Dict[int, CalibrationResult]:
+        """Calibrate all offset slots that have at least one active pair, in one batch.
+
+        Extracts timestamps for ALL channels, then runs calibration as if they were a single pair.
+
+        Args:
+            local_buffers:  {ch: TimestampBuffer}  — local channels
+            remote_buffers: {ch: TimestampBuffer}  — remote channels"""
+        
+        # Combine all local and remote timestamps into two big arrays
+        all_local_ts = np.concatenate([buf.get_timestamps() for buf in local_buffers.values()])
+        all_remote_ts = np.concatenate([buf.get_timestamps() for buf in remote_buffers.values()])
+
+        # Sort data
+        all_local_ts.sort()
+        all_remote_ts.sort()
+
+        logger.info(f"Batch calibrating ALL pairs: "
+                    f"local total={len(all_local_ts):,} ts, "
+                    f"remote total={len(all_remote_ts):,} ts")
+
+        # Run calibration on the combined data
+        result = self.calibrate_pair(all_local_ts, all_remote_ts)
+
+        # Apply the same result to all offset slots (since we can't differentiate them in batch mode)
+        return {idx: result for idx in range(4)}

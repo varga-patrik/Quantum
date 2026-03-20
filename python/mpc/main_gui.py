@@ -597,10 +597,6 @@ class App:
                   command=self._add_correlation_pair).grid(row=0, column=3, padx=5)
         tk.Button(add_frame, text="- Remove Last", background='#FF5722', width=12,
                   command=self._remove_correlation_pair).grid(row=1, column=3, padx=5)
-        
-        # Add button for all calibrate all 
-        tk.Button(add_frame, text="🔬 Calibrate All", background='#9C27B0', foreground='white',
-                  command=self._start_live_calibration_for_all_inputs).grid(row=2, column=3, padx=5)
 
         # Live calibrator instance
         self._live_calibrator = LiveOffsetCalibrator()
@@ -677,6 +673,23 @@ class App:
                 status.grid(row=row_i, column=4, sticky="w", padx=2)
                 self._calibration_status_labels[ofs_idx] = status
                 self._pair_row_widgets.append(status)
+
+        #Add one last calibrate all button
+        btn = tk.Button(self.pair_rows_frame, text="🔬 Calibrate All", 
+                                                                         background='#9C27B0', foreground='white',
+                                        command=self._start_live_calibration_for_all_inputs).grid(row=len(self.correlation_pairs) + 1, 
+                                                                                                  column=3, padx=2, pady=1)
+        self._calibrate_buttons[len(self.correlation_pairs)] = btn
+        self._pair_row_widgets.append(btn)
+
+        # Status label for calibrate all
+        label = tk.Label(self.pair_rows_frame, text="not set",
+                                                                                font=('Arial', 8), foreground='#666', width=30, 
+                                                                                anchor='w').grid(row=len(self.correlation_pairs) + 1, 
+                                                                                column=4, sticky="w", padx=2)
+        self._calibration_status_labels[len(self.correlation_pairs)] = label
+        self._pair_row_widgets.append(label)
+        
 
     def _update_pair_listbox(self):
         """Update the correlation pair display (now uses rows instead of listbox)."""
@@ -873,8 +886,8 @@ class App:
         thread.start()
 
 
-    def _start_live_calibration_for_all_inputs(self, offset_idx: int):
-            """Start live FFT calibration for a specific offset slot.
+    def _start_live_calibration_for_all_inputs(self):
+            """Start live FFT calibration for all offset slots using all active channels.
 
             Requires streaming to be active (buffers must have data).
             Runs in a background thread so the UI stays responsive.
@@ -885,28 +898,26 @@ class App:
 
             # Check streaming is active
             if not hasattr(self, 'plot_updater') or not self.plot_updater.streaming_active:
-                if offset_idx in self._calibration_status_labels:
-                    self._calibration_status_labels[offset_idx].config(
+                # Update status for the last offset slot (used for "Calibrate All" status display)
+                if self._calibration_status_labels:
+                    last_offset_idx = len(self._calibration_status_labels) - 1
+                    self._calibration_status_labels[last_offset_idx].config(
                         text="⚠️ Start streaming first!", foreground='#D32F2F')
                 logger.warning("Cannot calibrate — streaming not active")
                 return
 
-            # Check not already running for this slot
-            if offset_idx in self._calibration_threads and self._calibration_threads[offset_idx].is_alive():
-                logger.warning("Calibration already running for offset %d", offset_idx + 1)
+            # Check not already running for for any slot
+            if any(offset_idx in self._calibration_threads and self._calibration_threads[offset_idx].is_alive() for offset_idx in self._calibration_threads):
+                logger.warning("Calibration already running for one or more offset slots")
                 return
 
-            # Collect all active channels
-            active_channels = []
-            for src in ["L", "R"]:
-                for ch in range(1, 5):
-                    active_channels.append((src, ch))
-
-            # Disable button, update status
-            if offset_idx in self._calibrate_buttons:
-                self._calibrate_buttons[offset_idx].config(state='disabled', text="⏳ Wait…")
-            if offset_idx in self._calibration_status_labels:
-                self._calibration_status_labels[offset_idx].config(
+            # Disable button, update status for the "Calibrate All" status label (using the last offset slot's label for display)
+            if self._calibrate_buttons:
+                last_offset_idx = len(self._calibrate_buttons) - 1
+                self._calibrate_buttons[last_offset_idx].config(state='disabled', text="⏳ Wait…")
+            if self._calibration_status_labels:
+                last_offset_idx = len(self._calibration_status_labels) - 1
+                self._calibration_status_labels[last_offset_idx].config(
                     text="Starting calibration…",
                     foreground='#1565C0')
 
@@ -919,7 +930,7 @@ class App:
                     from utils.common import zmq_exec
                     importlib.reload(_cfg_mod)
                     cal_duration = _cfg_mod.CALIBRATION_DURATION_SEC
-                    logger.info(f"Calibration[Offset {offset_idx+1}]: duration reloaded = {cal_duration}s")
+                    logger.info(f"Calibration[Offset All]: duration reloaded = {cal_duration}s")
 
                     # Apply role-specific TC delay values before data accumulation.
                     if not is_mock_controller(self.tc):
@@ -939,14 +950,12 @@ class App:
                                 tc_cmd = f"{cmd_name}:value {cmd_value}"
                                 zmq_exec(self.tc, tc_cmd)
                                 logger.info(
-                                    "Calibration[Offset %d]: sent TC command %s",
-                                    offset_idx + 1,
+                                    "Calibration[Offset All]: sent TC command %s",
                                     tc_cmd,
                                 )
                         except Exception as e:
                             logger.warning(
-                                "Calibration[Offset %d]: failed to send TC delay commands: %s",
-                                offset_idx + 1,
+                                "Calibration[Offset All]: failed to send TC delay commands: %s",
                                 e,
                             )
 
@@ -956,37 +965,35 @@ class App:
                             sent = self.peer_connection.send_command('APPLY_SERVER_TC_DELAYS', {})
                             if sent:
                                 logger.info(
-                                    "Calibration[Offset %d]: requested server to apply TC Wigner delay commands",
-                                    offset_idx + 1,
+                                    "Calibration[Offset All]: requested server to apply TC Wigner delay commands",
                                 )
                             else:
                                 logger.warning(
-                                    "Calibration[Offset %d]: failed to request server TC delay apply",
-                                    offset_idx + 1,
+                                    "Calibration[Offset All]: failed to request server TC delay apply",
                                 )
                         else:
                             logger.warning(
-                                "Calibration[Offset %d]: no peer connection, cannot request server TC delay apply",
-                                offset_idx + 1,
+                                "Calibration[Offset All]: no peer connection, cannot request server TC delay apply",
                             )
 
                     # --- Phase 1: Accumulate data ---
-                    # Clear the relevant buffers so we get fresh data only
-                    for src, ch in active_channels:
-                        bufs = self.plot_updater.local_buffers if src == "L" else self.plot_updater.remote_buffers
-                        bufs[ch].clear()
+                    # Clear all currently tracked local/remote channel buffers.
+                    for buf in self.plot_updater.local_buffers.values():
+                        buf.clear()
+                    for buf in self.plot_updater.remote_buffers.values():
+                        buf.clear()
 
                     # Wait, updating countdown on UI
                     for elapsed in range(cal_duration):
                         if not self.plot_updater.streaming_active:
-                            self.root.after(0, lambda: self._calibration_status_labels.get(offset_idx) and
-                                            self._calibration_status_labels[offset_idx].config(
+                            self.root.after(0, lambda: self._calibration_status_labels.get(len(self._calibration_status_labels) - 1) and
+                                            self._calibration_status_labels[len(self._calibration_status_labels) - 1].config(
                                                 text="⚠️ Streaming stopped", foreground='#D32F2F'))
                             return
                         remaining = cal_duration - elapsed
                         self.root.after(0, lambda r=remaining, d=cal_duration: (
-                            self._calibration_status_labels.get(offset_idx) and
-                            self._calibration_status_labels[offset_idx].config(
+                            self._calibration_status_labels.get(len(self._calibration_status_labels) - 1) and
+                            self._calibration_status_labels[len(self._calibration_status_labels) - 1].config(
                                 text=f"Accumulating data… {d - r}/{d}s",
                                 foreground='#1565C0')
                         ))
@@ -994,36 +1001,29 @@ class App:
 
                     # --- Phase 2: Snapshot buffers and run FFT ---
                     self.root.after(0, lambda: (
-                        self._calibration_status_labels.get(offset_idx) and
-                        self._calibration_status_labels[offset_idx].config(
+                        self._calibration_status_labels.get(len(self._calibration_status_labels) - 1) and
+                        self._calibration_status_labels[len(self._calibration_status_labels) - 1].config(
                             text="Computing FFT…", foreground='#6A1B9A')
                     ))
 
                     # Get buffers for all active channels
-                    all_ts_a = []
-                    all_ts_b = []
-                    for src, ch in active_channels:
-                        bufs = self.plot_updater.local_buffers if src == "L" else self.plot_updater.remote_buffers
-                        ts = bufs[ch].get_timestamps()
-                        if src == "L":
-                            all_ts_a.extend(ts)
-                        else:
-                            all_ts_b.extend(ts)
-                    
-                    result: CalibrationResult = self._live_calibrator.calibrate_all(all_ts_a, all_ts_b)
+                    result: CalibrationResult = self._live_calibrator.calibrate_all_as_one(
+                        self.plot_updater.local_buffers,
+                        self.plot_updater.remote_buffers
+                    )
 
                     # --- Phase 3: Apply result for all offsets ---
                     for idx in range(4):
                         self.root.after(0, lambda: self._apply_calibration_result(idx, result))
 
                 except Exception as e:
-                    logger.error(f"Calibration failed for offset {offset_idx+1}: {e}", exc_info=True)
+                    logger.error(f"Calibration failed for offsets: {e}", exc_info=True)
                     self.root.after(0, lambda: self._apply_calibration_result(
-                        offset_idx, CalibrationResult(success=False, message=str(e))))
+                        len(self._calibration_status_labels) - 1, CalibrationResult(success=False, message=str(e))))
 
             thread = threading.Thread(target=_calibration_worker, daemon=True,
-                                    name=f"LiveCalibrate-Ofs{offset_idx+1}")
-            self._calibration_threads[offset_idx] = thread
+                                    name=f"LiveCalibrate-OfsAll")
+            self._calibration_threads[len(self._calibration_threads)] = thread
             thread.start()
 
 
