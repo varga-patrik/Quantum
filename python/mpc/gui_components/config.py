@@ -24,7 +24,7 @@ DEFAULT_BIN_COUNT = 20
 DEFAULT_HISTOGRAMS = [1, 2, 3, 4]
 
 # Timestamp streaming settings
-COINCIDENCE_WINDOW_PS = 2000  # coincidence window in picoseconds
+COINCIDENCE_WINDOW_PS = 1000  # coincidence window in picoseconds
 TIMESTAMP_BUFFER_DURATION_SEC = 30.0  # Local buffer: keep 30s so old local data can still overlap with bursty remote arrivals
 REMOTE_BUFFER_DURATION_SEC = 30.0  # Remote buffer: keep 30s to survive 10-15s gaps between remote data bursts
 TIMESTAMP_BUFFER_MAX_SIZE = 10_000_000  # Max timestamps per channel (safety limit)
@@ -33,15 +33,22 @@ MAX_SEND_PER_CH = 50_000  # Max timestamps per channel per combined send. Keeps 
                            # burst messages under ~2 MB encrypted. Backlog drains in <1s.
 STREAM_PORTS_BASE = 4241  # Time Controller streaming ports: 4242, 4243, 4244, 4245
 
-# Live offset calibration
-# Duration in seconds to accumulate data before running FFT calibration
-CALIBRATION_DURATION_SEC = 60
-
 # Time Controller command sent at live calibration start:
 TCBME_DELAY1_VALUE = 0
 TCBME_DELAY2_VALUE = 0
-TCWIGNER_DELAY1_VALUE = 0 
+TCBME_DELAY3_VALUE = 0
+TCBME_DELAY4_VALUE = 0
+
+TCWIGNER_DELAY1_VALUE = 0
+TCWIGNER_DELAY2_VALUE = 0
+TCWIGNER_DELAY3_VALUE = 0
 TCWIGNER_DELAY4_VALUE = 0 
+
+#note: some good delays 103.567.360, 103.727.260
+
+# Live offset calibration
+# Duration in seconds to accumulate data before running FFT calibration
+CALIBRATION_DURATION_SEC = 90
 
 # Live FFT calibration parameters — optimised for expected ~103 µs offset
 # tau=4096 ps, N=2^17=131072 → window ≈ 537 µs (±268 µs), resolution ≈ 4 ns
