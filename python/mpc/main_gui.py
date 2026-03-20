@@ -1016,14 +1016,14 @@ class App:
                     ))
 
                     # Get buffers for all active channels
-                    result: CalibrationResult = self._live_calibrator.calibrate_all_as_one(
+                    results_by_offset = self._live_calibrator.calibrate_all_as_one(
                         self.plot_updater.local_buffers,
                         self.plot_updater.remote_buffers
                     )
 
                     # --- Phase 3: Apply result for all offsets ---
-                    for idx in range(4):
-                        self.root.after(0, lambda: self._apply_calibration_result(idx, result))
+                    for idx, result in results_by_offset.items():
+                        self.root.after(0, lambda i=idx, r=result: self._apply_calibration_result(i, r))
                     self.root.after(0, lambda: self._calibrate_buttons.get(all_key) and
                                     self._calibrate_buttons[all_key].config(state='normal', text="🔬 Calibrate All"))
 
