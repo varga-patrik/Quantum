@@ -20,7 +20,8 @@ from gui_components import (
     DEFAULT_BIN_COUNT, BG_COLOR, FG_COLOR,
     HIGHLIGHT_COLOR, PRIMARY_COLOR, ACTION_COLOR, 
     DEFAULT_LOCAL_SERIALS, DEFAULT_REMOTE_SERIALS,
-    format_number, PlotUpdater, OptimizerRowExtended
+    DEFAULT_LOCAL_CAGE_SERIALS, DEFAULT_REMOTE_CAGE_SERIALS,
+    format_number, PlotUpdater, OptimizerRowExtended, CageRotatorOptimizerRow
 )
 from gui_components.file_transfer_manager import FileTransferManager
 from gui_components.peer_command_handlers import PeerCommandHandlers
@@ -98,6 +99,7 @@ class App:
         
         # Optimizer rows state
         self.optim_rows = {}
+        self.cage_optim_rows = {}
 
         # Setup UI layout
         self._setup_layout()
@@ -1571,8 +1573,87 @@ class App:
             )
             self.optim_rows[r] = row
 
+        self._build_cage_rotator_section(container)
+
         # Build bulk controls
         self._build_bulk_controls()
+        self._build_cage_bulk_controls()
+
+    def _build_cage_rotator_section(self, container):
+        """Build CageRotator optimizer rows (2 local + 2 remote)."""
+        cage_container = tk.Frame(container, relief=tk.RIDGE, bd=3, background='#FFF8E1')
+        cage_container.grid(row=3, column=0, sticky="ew", pady=(0, 10))
+
+        tk.Label(
+            cage_container,
+            text="CageRotator optimizálás (2 local + 2 remote)",
+            font=('Arial', 11, 'bold'),
+            foreground='#EF6C00',
+            background='#FFF8E1',
+        ).grid(row=0, column=0, columnspan=1, sticky="news", pady=(5, 5), padx=5)
+
+        headers = [
+            "Serial Number", "TC Ch", "Start [deg]", "Start Val",
+            "Angle [deg]", "Current Val", "Best [deg]", "Best Val",
+            "Status", "Actions"
+        ]
+
+        local_frame = tk.Frame(cage_container, relief=tk.RIDGE, bd=2, background='#FFFDE7')
+        local_frame.grid(row=1, column=0, sticky="ew", padx=5, pady=(0, 6))
+        tk.Label(
+            local_frame,
+            text="LOCAL CAGE ROTATORS",
+            font=('Arial', 10, 'bold'),
+            foreground='#E65100',
+            background='#FFFDE7',
+        ).grid(row=0, column=0, columnspan=10, sticky="news", pady=(4, 4), padx=4)
+        for j, h in enumerate(headers):
+            tk.Label(local_frame, text=h, font=('Arial', 9, 'bold'), background='#FFFDE7').grid(
+                row=1, column=j, padx=3, pady=3
+            )
+
+        local_cage_serials = (
+            DEFAULT_LOCAL_CAGE_SERIALS if self.computer_role == "computer_a" else DEFAULT_REMOTE_CAGE_SERIALS
+        )
+        for r in range(2):
+            default_serial, default_channel = local_cage_serials[r] if r < len(local_cage_serials) else ("", r + 1)
+            row = CageRotatorOptimizerRow(
+                local_frame, r, self.tc_address, self.action_color,
+                is_remote=False,
+                peer_connection=self.peer_connection,
+                default_serial=default_serial,
+                default_channel=default_channel,
+            )
+            self.cage_optim_rows[r] = row
+
+        remote_frame = tk.Frame(cage_container, relief=tk.RIDGE, bd=2, background='#E8F5FF')
+        remote_frame.grid(row=2, column=0, sticky="ew", padx=5, pady=(0, 6))
+        tk.Label(
+            remote_frame,
+            text="REMOTE CAGE ROTATORS",
+            font=('Arial', 10, 'bold'),
+            foreground='#0D47A1',
+            background='#E8F5FF',
+        ).grid(row=0, column=0, columnspan=10, sticky="news", pady=(4, 4), padx=4)
+        for j, h in enumerate(headers):
+            tk.Label(remote_frame, text=h, font=('Arial', 9, 'bold'), background='#E8F5FF').grid(
+                row=1, column=j, padx=3, pady=3
+            )
+
+        remote_cage_serials = (
+            DEFAULT_REMOTE_CAGE_SERIALS if self.computer_role == "computer_a" else DEFAULT_LOCAL_CAGE_SERIALS
+        )
+        for r in range(2, 4):
+            local_idx = r - 2
+            default_serial, default_channel = remote_cage_serials[local_idx] if local_idx < len(remote_cage_serials) else ("", local_idx + 1)
+            row = CageRotatorOptimizerRow(
+                remote_frame, r, self.tc_address, self.action_color,
+                is_remote=True,
+                peer_connection=self.peer_connection,
+                default_serial=default_serial,
+                default_channel=default_channel,
+            )
+            self.cage_optim_rows[r] = row
 
     def _build_bulk_controls(self):
         """Build bulk control buttons for all optimizer rows."""
@@ -1664,6 +1745,93 @@ class App:
             except Exception:
                 pass
 
+    def _build_cage_bulk_controls(self):
+        """Build bulk controls for CageRotator optimizer rows."""
+        bulk = tk.Frame(self.tab_polarizer, relief=tk.GROOVE, bd=2, width=800)
+        bulk.grid(row=2, column=0, sticky="nws", pady=5)
+
+        tk.Label(bulk, text="CAGE LOCAL:", font=('Arial', 9, 'bold'), foreground='#E65100').grid(
+            row=0, column=0, padx=(10, 5), sticky=tk.W
+        )
+        tk.Button(
+            bulk, text="Optimize all local", background='#FFA726', width=16,
+            command=self._optimize_all_cage_local
+        ).grid(row=0, column=1, padx=4)
+        tk.Button(
+            bulk, text="Stop all local", background='#FF7043', width=16,
+            command=self._stop_all_cage_local
+        ).grid(row=0, column=2, padx=4)
+
+        tk.Label(bulk, text="CAGE REMOTE:", font=('Arial', 9, 'bold'), foreground='#1565C0').grid(
+            row=1, column=0, padx=(10, 5), sticky=tk.W
+        )
+        tk.Button(
+            bulk, text="Optimize all remote", background='#42A5F5', width=16,
+            command=self._optimize_all_cage_remote
+        ).grid(row=1, column=1, padx=4)
+        tk.Button(
+            bulk, text="Stop all remote", background='#FF7043', width=16,
+            command=self._stop_all_cage_remote
+        ).grid(row=1, column=2, padx=4)
+
+        tk.Label(bulk, text="Cage Row (1-4):").grid(row=0, column=3, padx=(20, 2))
+        self.cage_sel_var = tk.StringVar(value="1")
+        ttk.Combobox(
+            bulk,
+            values=["1", "2", "3", "4"],
+            width=4,
+            state="readonly",
+            textvariable=self.cage_sel_var,
+        ).grid(row=0, column=4, padx=2)
+        tk.Button(
+            bulk, text="Optimize one", background=self.action_color, width=14,
+            command=self._optimize_one_cage
+        ).grid(row=0, column=5, padx=4)
+
+    def _optimize_all_cage_local(self):
+        """Start optimization for local CageRotator rows (0-1)."""
+        for i in range(2):
+            row = self.cage_optim_rows.get(i)
+            if row and row.has_serial():
+                row._on_start()
+
+    def _stop_all_cage_local(self):
+        """Stop optimization for local CageRotator rows (0-1)."""
+        for i in range(2):
+            row = self.cage_optim_rows.get(i)
+            if row:
+                row._on_stop()
+
+    def _optimize_all_cage_remote(self):
+        """Start optimization for remote CageRotator rows (2-3)."""
+        for i in range(2, 4):
+            row = self.cage_optim_rows.get(i)
+            if row and row.has_serial():
+                row._on_start()
+
+    def _stop_all_cage_remote(self):
+        """Stop optimization for remote CageRotator rows (2-3)."""
+        for i in range(2, 4):
+            row = self.cage_optim_rows.get(i)
+            if row:
+                row._on_stop()
+
+    def _optimize_one_cage(self):
+        """Start optimization for selected CageRotator row (1-4)."""
+        try:
+            idx = max(0, min(3, int(self.cage_sel_var.get()) - 1))
+        except Exception:
+            idx = 0
+
+        row = self.cage_optim_rows.get(idx)
+        if row and row.has_serial():
+            row._on_start()
+        elif row:
+            try:
+                row.status_lbl.config(text="Hiányzó serial/nincs kapcsolat")
+            except Exception:
+                pass
+
 
     
     def _build_time_offset_tab(self):
@@ -1705,10 +1873,20 @@ class App:
         except Exception:
             pass
         
-        # Cleanup per-row optimizer resources (all 8 rows)
+        # Cleanup per-row optimizer resources
         try:
             for i in list(getattr(self, 'optim_rows', {}).keys()):
                 row = self.optim_rows[i]
+                try:
+                    row.cleanup()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        try:
+            for i in list(getattr(self, 'cage_optim_rows', {}).keys()):
+                row = self.cage_optim_rows[i]
                 try:
                     row.cleanup()
                 except Exception:

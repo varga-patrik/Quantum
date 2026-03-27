@@ -23,6 +23,10 @@ class PeerCommandHandlers:
         peer_connection.register_command_handler('OPTIMIZE_STOP', self.handle_optimize_stop)
         peer_connection.register_command_handler('STATUS_UPDATE', self.handle_status_update)
         peer_connection.register_command_handler('PROGRESS_UPDATE', self.handle_progress_update)
+        peer_connection.register_command_handler('CAGE_OPTIMIZE_START', self.handle_cage_optimize_start)
+        peer_connection.register_command_handler('CAGE_OPTIMIZE_STOP', self.handle_cage_optimize_stop)
+        peer_connection.register_command_handler('CAGE_STATUS_UPDATE', self.handle_cage_status_update)
+        peer_connection.register_command_handler('CAGE_PROGRESS_UPDATE', self.handle_cage_progress_update)
         peer_connection.register_command_handler('STREAMING_START', self.handle_streaming_start)
         peer_connection.register_command_handler('STREAMING_STOP', self.handle_streaming_stop)
         peer_connection.register_command_handler('TIMESTAMP_BATCH', self.handle_timestamp_batch)
@@ -69,6 +73,46 @@ class PeerCommandHandlers:
         
         if remote_row_idx in self.app.optim_rows:
             self.app.optim_rows[remote_row_idx].handle_remote_progress(data)
+
+    def handle_cage_optimize_start(self, data: dict):
+        """Handle remote CageRotator optimization start command."""
+        rows = getattr(self.app, 'cage_optim_rows', {})
+        remote_row_idx = data.get('row_index', 0)
+        local_row_idx = remote_row_idx - 2  # Map 2-3 to 0-1
+
+        if local_row_idx in rows:
+            row = rows[local_row_idx]
+            if not row.is_remote:
+                row.channel_box.set(data.get('channel', 1))
+                if data.get('serial'):
+                    row.serial_var.set(data['serial'])
+                row._on_start()
+
+    def handle_cage_optimize_stop(self, data: dict):
+        """Handle remote CageRotator optimization stop command."""
+        rows = getattr(self.app, 'cage_optim_rows', {})
+        local_row_idx = data.get('row_index', 0) - 2  # Map 2-3 to 0-1
+
+        if local_row_idx in rows:
+            row = rows[local_row_idx]
+            if not row.is_remote:
+                row._on_stop()
+
+    def handle_cage_status_update(self, data: dict):
+        """Handle CageRotator status update from remote peer."""
+        rows = getattr(self.app, 'cage_optim_rows', {})
+        remote_row_idx = data.get('row_index', 0) + 2  # Map 0-1 to 2-3
+
+        if remote_row_idx in rows:
+            rows[remote_row_idx].handle_remote_status(data)
+
+    def handle_cage_progress_update(self, data: dict):
+        """Handle CageRotator progress update from remote peer."""
+        rows = getattr(self.app, 'cage_optim_rows', {})
+        remote_row_idx = data.get('row_index', 0) + 2  # Map 0-1 to 2-3
+
+        if remote_row_idx in rows:
+            rows[remote_row_idx].handle_remote_progress(data)
     
     # Streaming control handlers
     

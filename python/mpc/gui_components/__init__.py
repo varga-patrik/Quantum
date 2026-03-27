@@ -21,12 +21,15 @@ from .config import (
     HISTOGRAM_LABELS,
     DEFAULT_SERIALS,
     DEFAULT_LOCAL_SERIALS,
-    DEFAULT_REMOTE_SERIALS
+    DEFAULT_REMOTE_SERIALS,
+    DEFAULT_LOCAL_CAGE_SERIALS,
+    DEFAULT_REMOTE_CAGE_SERIALS,
 )
 
 from .helpers import format_number, format_angles
 from .plot_updater import PlotUpdater
 from .optimizer_row_extended import OptimizerRowExtended
+from .cage_rotator_optimizer_row import CageRotatorOptimizerRow
 
 __all__ = [
     'DEFAULT_TC_ADDRESS',
@@ -50,8 +53,11 @@ __all__ = [
     'DEFAULT_SERIALS',
     'DEFAULT_LOCAL_SERIALS',
     'DEFAULT_REMOTE_SERIALS',
+    'DEFAULT_LOCAL_CAGE_SERIALS',
+    'DEFAULT_REMOTE_CAGE_SERIALS',
     'format_number',
     'format_angles',
     'PlotUpdater',
-    'OptimizerRowExtended'
+    'OptimizerRowExtended',
+    'CageRotatorOptimizerRow',
 ]
