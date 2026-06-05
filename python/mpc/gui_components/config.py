@@ -113,13 +113,13 @@ DEFAULT_REMOTE_SERIALS = [
 
 # Default cage rotator serials for local and remote optimizer rows (serial, TC channel)
 DEFAULT_LOCAL_CAGE_SERIALS = [
-    ("00000000", 1),
-    ("00000000", 2),
+    ("55528174", 1), #lambda/4
+    ("55526814", 2), #lambda/2
 ]
 
 DEFAULT_REMOTE_CAGE_SERIALS = [
-    ("00000000", 1),
-    ("00000000", 2),
+    ("55290504", 1), #lambda/4
+    ("55290814", 2), #lambda/2
 ]
 
 # Legacy alias for backward compatibility

@@ -27,10 +27,60 @@ def _measure_counts(tc, channel: int, samples: int = 2, inter_sample_sleep: floa
     return acc / count
 
 
+def _measure_visibility(tc, channel_a: int, channel_b: int, samples: int = 2, inter_sample_sleep: float = 0.02) -> float:
+    """Measure visibility between two TC channels using averaged counts.
+
+    Visibility defined as (max - min) / (max + min). Returns 0.0 if sum is zero.
+    """
+    def _sum_spec(spec):
+        if spec is None:
+            return 0.0
+        if isinstance(spec, (list, tuple)):
+            s = 0.0
+            for ch in spec:
+                try:
+                    s += _measure_counts(tc, int(ch), samples, inter_sample_sleep)
+                except Exception:
+                    pass
+            return s
+        try:
+            return _measure_counts(tc, int(spec), samples, inter_sample_sleep)
+        except Exception:
+            return 0.0
+
+    a = _sum_spec(channel_a)
+    b = _sum_spec(channel_b)
+    s = a + b
+    if s <= 0:
+        return 0.0
+    return abs(a - b) / s
+
+
+def _parse_channel_spec(spec: str):
+    """Parse a comma-separated channel spec into a list of ints.
+
+    Examples: '1' -> [1], '1,2' -> [1,2], '' -> []. Ignores invalid entries.
+    """
+    if spec is None:
+        return []
+    s = str(spec).strip()
+    if not s:
+        return []
+    parts = [p.strip() for p in s.split(',') if p.strip()]
+    out = []
+    for p in parts:
+        try:
+            out.append(int(p))
+        except Exception:
+            pass
+    return out
+
+
 def optimize_cage_rotator(
     controller,
     tc,
-    channel: int,
+    channel_a: int,
+    channel_b: int,
     *,
     angle_min: float = 0.0,
     angle_max: float = 360.0,
@@ -44,7 +94,10 @@ def optimize_cage_rotator(
     progress=None,
     stop_event=None,
 ):
-    """Gradient-ascent optimizer for one cage rotator angle."""
+    """Gradient-ascent optimizer for one cage rotator angle maximizing visibility.
+
+    The objective is the visibility computed from two TC channels.
+    """
 
     def move_to(angle: float):
         controller.move_to(angle)
@@ -54,7 +107,7 @@ def optimize_cage_rotator(
     def eval_at(angle: float) -> float:
         a = _clip_angle(angle, angle_min, angle_max)
         move_to(a)
-        return _measure_counts(tc, channel=channel, samples=measure_samples)
+        return _measure_visibility(tc, channel_a=channel_a, channel_b=channel_b, samples=measure_samples)
 
     x = _clip_angle(controller.get_position(), angle_min, angle_max)
     fx = eval_at(x)
@@ -155,10 +208,23 @@ class CageRotatorOptimizerRow:
         if self.is_remote:
             self.serial_entry.config(background="#E3F2FD")
 
-        self.channel_var = tk.IntVar(value=default_channel)
-        self.channel_box = ttk.Combobox(self.frame, values=[1, 2, 3, 4], width=5, state="readonly")
-        self.channel_box.set(default_channel)
-        self.channel_box.grid(row=row, column=1)
+        # channel list entries (comma-separated allowed), A and B sides
+        self.channel_entry_a = tk.Entry(self.frame, width=8)
+        self.channel_entry_a.grid(row=row, column=1)
+        self.channel_entry_b = tk.Entry(self.frame, width=8)
+        self.channel_entry_b.grid(row=row, column=2)
+        # set defaults
+        try:
+            self.channel_entry_a.delete(0, tk.END)
+            self.channel_entry_a.insert(0, str(int(default_channel)))
+        except Exception:
+            self.channel_entry_a.insert(0, "1")
+        default_secondary = (default_channel % 4) + 1 if isinstance(default_channel, int) else 2
+        try:
+            self.channel_entry_b.delete(0, tk.END)
+            self.channel_entry_b.insert(0, str(int(default_secondary)))
+        except Exception:
+            self.channel_entry_b.insert(0, "2")
 
         self.start_angle_lbl = tk.Label(self.frame, text="-", width=10)
         self.start_value_lbl = tk.Label(self.frame, text="-", width=10)
@@ -171,13 +237,14 @@ class CageRotatorOptimizerRow:
         if self.is_remote:
             self.status_lbl.config(foreground="blue")
 
-        self.start_angle_lbl.grid(row=row, column=2)
-        self.start_value_lbl.grid(row=row, column=3)
-        self.angle_lbl.grid(row=row, column=4)
-        self.value_lbl.grid(row=row, column=5)
-        self.best_angle_lbl.grid(row=row, column=6)
-        self.best_value_lbl.grid(row=row, column=7)
-        self.status_lbl.grid(row=row, column=8)
+        # shift label columns right by one to accommodate second channel selector
+        self.start_angle_lbl.grid(row=row, column=3)
+        self.start_value_lbl.grid(row=row, column=4)
+        self.angle_lbl.grid(row=row, column=5)
+        self.value_lbl.grid(row=row, column=6)
+        self.best_angle_lbl.grid(row=row, column=7)
+        self.best_value_lbl.grid(row=row, column=8)
+        self.status_lbl.grid(row=row, column=9)
 
         self.start_btn = tk.Button(
             self.frame,
@@ -198,7 +265,7 @@ class CageRotatorOptimizerRow:
         btn_frame = tk.Frame(self.frame)
         self.start_btn.pack(in_=btn_frame, side=tk.LEFT)
         self.stop_btn.pack(in_=btn_frame, side=tk.LEFT, padx=4)
-        btn_frame.grid(row=row, column=9)
+        btn_frame.grid(row=row, column=10)
 
     def _fmt_angle(self, value: float) -> str:
         try:
@@ -206,17 +273,23 @@ class CageRotatorOptimizerRow:
         except Exception:
             return "-"
 
+    def _fmt_visibility(self, value: float) -> str:
+        try:
+            return f"{float(value):.3f}"
+        except Exception:
+            return "-"
+
     def _on_progress(self, it, angle, value, best_angle, best_value):
         try:
             if not self.started_set and it == 0:
                 self.start_angle_lbl.config(text=self._fmt_angle(angle))
-                self.start_value_lbl.config(text=format_number(int(value)))
+                self.start_value_lbl.config(text=self._fmt_visibility(value))
                 self.started_set = True
 
             self.angle_lbl.config(text=self._fmt_angle(angle))
-            self.value_lbl.config(text=format_number(int(value)))
+            self.value_lbl.config(text=self._fmt_visibility(value))
             self.best_angle_lbl.config(text=self._fmt_angle(best_angle))
-            self.best_value_lbl.config(text=format_number(int(best_value)))
+            self.best_value_lbl.config(text=self._fmt_visibility(best_value))
             self.status_lbl.config(text=f"Iter {it}")
             self.last_iter = it
 
@@ -227,9 +300,9 @@ class CageRotatorOptimizerRow:
                         "row_index": self.row_idx,
                         "iteration": it,
                         "angle": float(angle),
-                        "value": int(value),
+                        "value": float(value),
                         "best_angle": float(best_angle),
-                        "best_value": int(best_value),
+                        "best_value": float(best_value),
                     },
                 )
         except Exception:
@@ -272,10 +345,23 @@ class CageRotatorOptimizerRow:
         self._send_status_to_peer("Csatlakozás...")
 
         serial = self.serial_var.get().strip()
+        # parse channel lists (comma-separated allowed)
         try:
-            channel = int(self.channel_box.get())
+            ch_spec_a = self.channel_entry_a.get()
         except Exception:
-            channel = 1
+            ch_spec_a = ""
+        channel_a = _parse_channel_spec(ch_spec_a)
+        if not channel_a:
+            channel_a = [1]
+
+        try:
+            ch_spec_b = self.channel_entry_b.get()
+        except Exception:
+            ch_spec_b = ""
+        channel_b = _parse_channel_spec(ch_spec_b)
+        if not channel_b:
+            # default to next channel if nothing provided
+            channel_b = [((channel_a[0] if channel_a else 1) % 4) + 1]
 
         if not serial:
             self.status_lbl.config(text="Hiányzó serial")
@@ -315,7 +401,8 @@ class CageRotatorOptimizerRow:
             optimize_cage_rotator(
                 controller=self.controller,
                 tc=self.tc,
-                channel=channel,
+                channel_a=channel_a,
+                channel_b=channel_b,
                 angle_min=0.0,
                 angle_max=360.0,
                 measure_samples=2,
@@ -345,16 +432,29 @@ class CageRotatorOptimizerRow:
             return
 
         serial = self.serial_var.get().strip()
+        # parse channel lists for remote command
         try:
-            channel = int(self.channel_box.get())
+            ch_spec_a = self.channel_entry_a.get()
         except Exception:
-            channel = 1
+            ch_spec_a = ""
+        channel_a = _parse_channel_spec(ch_spec_a)
+        if not channel_a:
+            channel_a = [1]
+
+        try:
+            ch_spec_b = self.channel_entry_b.get()
+        except Exception:
+            ch_spec_b = ""
+        channel_b = _parse_channel_spec(ch_spec_b)
+        if not channel_b:
+            channel_b = [((channel_a[0] if channel_a else 1) % 4) + 1]
 
         success = self.peer_connection.send_command(
             "CAGE_OPTIMIZE_START",
             {
                 "row_index": self.row_idx,
-                "channel": channel,
+                "channel_a": channel_a,
+                "channel_b": channel_b,
                 "serial": serial,
             },
         )

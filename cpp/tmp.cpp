@@ -46,12 +46,18 @@ std::vector<std::string> collectFiles(const std::string& folder, const std::stri
 }
 
 int main(int argc, char* argv[]) {
-    Correlator correlator(100000, (1ULL << 23));
+    /*Correlator correlator(100000, (1ULL << 23));
 
     correlator.Tshift = 0;
 
     std::vector<std::string> files_bme = collectFiles("../data", "timestamps_bme_03-06");
     std::vector<std::string> files_wigner = collectFiles("../data", "timestamps_wigner_03-06");
 
-    correlator.runCorrelation(false, files_bme, files_wigner, 2048);
+    correlator.runCorrelation(false, files_bme, files_wigner, 2048);*/
+
+    std::string ip_text = "172.26.34.159";
+    std::string output = "diff_data.csv";
+    FSUtil fs(6000, ip_text, output);
+
+    fs.measure_setup();
 }

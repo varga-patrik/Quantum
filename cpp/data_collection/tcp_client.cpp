@@ -196,7 +196,7 @@ int main(int argc, char **argv)
         printf("usage: %s server-name [manual]\n", argv[0]);
         return 1;
     }
-    if (argc == 3 && std::string(argv[2]) == "manual") {
+    if (argc == 3 && (std::string(argv[2]) == "--manual" || std::string(argv[2]) == "-m")) {
         manual_mode = true;
     }
 
