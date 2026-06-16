@@ -46,3 +46,60 @@ Lehetséges hogy a folyamatos küldés egy olyan hálózati jittert okoz ami szi
     A programot (main_gui.py) hasonlóan a másik verzióhoz úgy kell futatni hogy először a távoli állomáson kell elindítani szerver módban, majd a lokálison kliens módban.
     A GUI-n keresztül el lehet érni minden releváns funkciót egyszerű kattintásokkal, illetve a config.py-ban állítható rengeteg szám ami a GUI-n belül nem. 
             
+
+**ENGLISH**
+
+This project was created to prepare the optical devices for a Bell test.
+
+To achieve this, we aim to find the appropriate angles for two wave plates and three Motorized Polarization Controllers (MPCs) on each side in order to maximize the visibility between two remote stations.
+
+To support this goal, two software packages were developed: one in C++ and one in Python. The C++ package is responsible for controlling the wave plates, while the Python package was originally developed for the MPCs but was later extended to support the wave plates as well.
+
+## C++
+
+The C++ portion of the project is located in the `cpp` directory. To accomplish its task, several classes were developed, each handling a specific subsystem.
+
+The wave plate optimization follows a conceptually simple strategy. The software selects a wave plate and rotates it through its full 180° range in 10° increments while evaluating the state of the system. Once the best region is identified, the software performs a finer search within a range around the optimum (typically approximately ±10°) using smaller step sizes. After finding the optimal position, it proceeds to the next wave plate.
+
+Implementing this process is not trivial, as it requires controlling multiple devices and solving several supporting tasks. These include:
+
+* Controlling the wave plates, implemented by the `KinesisUtil` class located in the `kinesis` directory.
+* Communicating with the GPS clock, implemented by the `fs_util` class located in the `fs740` directory.
+* Determining the delay between the two stations, implemented by the `Correlator` class located in the `Correlator` directory.
+* Maintaining a TCP connection between the two remote stations, implemented by the `tcp_server` and `tcp_client` components located in the `data_collection` directory.
+* Acquiring timestamp data, implemented by the `timestamps_acquisition` components located in the `data_collection` directory.
+* Coordinating all devices and analyzing the collected data, implemented by the `Orchestrator` class located in the `orchestrator` directory.
+
+To use the software, the first step is to establish a TCP connection between the two stations. This is done by starting the server first and then the client. Under normal operation, the `Orchestrator` handles all commands automatically, although a manual mode is also available using the `-m` or `--manual` command-line options.
+
+Once the connection has been established, the system begins the optimization process. The optimization follows an iterative cycle in which a wave plate is rotated through its full 180° range in 10° steps while the system state is continuously evaluated. After identifying the most promising region, a finer search is performed around the optimum.
+
+The rotation process is synchronized with data acquisition using the GPS clock. After the data has been collected, the software searches for the point of maximum visibility and determines the corresponding wave plate angle by analyzing the timing information.
+
+I have not actively worked on this codebase since approximately February 2026, as I later shifted my focus to developing the Python version.
+
+## Python
+
+This software package is located in the `python` directory and provides significantly more functionality.
+
+Additionally, the original developer responsible for most of this code is no longer available, so this description may not be entirely complete or accurate.
+
+The Python package implements a GUI-based client-server system and provides the following functionality:
+
+* Determination of the delay between the two stations using live data.
+
+**NOTE:** Unfortunately, this feature often produces incorrect results, and I was unable to determine the exact cause. My best guess is that the two stations are not sufficiently synchronized and that some random timing offset within the system is causing the issue.
+
+It is also possible that the problem originates from the Time Tagger itself. The device does not provide a true real-time streaming mode, so "live data" in practice consists of data packets of fixed duration, which, if I remember correctly, are approximately 30 seconds long.
+
+It is possible that continuous packet transmission introduces network jitter that affects the delay calculation. However, there may also be other causes that I have not identified.
+
+**END OF NOTE**
+
+* Control of the MPCs, later extended to include wave plate control as well. I was unable to test this functionality thoroughly, so it likely contains bugs.
+* Determination of the delay between the two stations using previously recorded data. This functionality is effectively identical to the C++ `Correlator`.
+* Visualization of coincidence measurements using recorded data.
+
+The program (`main_gui.py`) is started similarly to the C++ version. The server should first be started on the remote station, followed by the client on the local station.
+
+All relevant functionality is accessible through the graphical user interface via simple button clicks. Additionally, many configuration parameters that are not exposed through the GUI can be adjusted directly in the `config.py` file.
