@@ -1,7 +1,4 @@
 # Bell-teszt előkészítő rendszer — Python kód dokumentáció
-
-> Ez a dokumentum folyamatosan bővül. Az eddig dokumentált fájlok: `main_gui.py`, `peer_connection.py`, `live_offset_calibrator.py`, `stream_client.py`, `plot_updater.py`, `optimizer_row_extended.py`, `cage_rotator_optimizer_row.py`, `peer_command_handlers.py`, `file_transfer_manager.py`, `time_offset_tab.py`, `config.py`.
-
 A rendszer egy GUI-alapú, kliens-szerver architektúrájú alkalmazás, amely két távoli állomás között koordinálja a Bell-teszt előkészítéséhez szükséges optikai eszközöket (MPC-k, fázistoló lemezek) és az időbélyeg-adatok gyűjtését.
 
 ---
