@@ -114,7 +114,6 @@ FFT-alapú keresztkorreláción alapuló időeltolás-számítás, közvetlenül
 - τ = 4096 ps (bin szélesség)
 - N = 2¹⁷ = 131 072 bin
 - Detektálható eltolás tartomány: ±268 µs
-- Memóriaigény: ~1 MB (szemben az offline 64 MB-jával)
 
 ### Metódusok
 
